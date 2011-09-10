@@ -5,6 +5,14 @@ import sys
 import ds_basic
 
 class Shell(object):
+    easteregg_strings = {
+        'love': "I have not been taught how to love.",
+        'me': """I can only help with a limited set of things.
+To see the list of things I can help with, type "help topics".
+
+If you're unsure where to turn, try http://www.allaboutcounseling.com/""",
+    }
+
     help_strings = {
         'default':
 """The most broadly useful commands are:
@@ -19,14 +27,6 @@ class Shell(object):
 
 To see a list of all commands and help topics, type "help topics\""""
         }
-
-    easteregg_strings = {
-        'love': "I have not been taught how to love.",
-        'me': """I can only help with a limited set of things.
-To see the list of things I can help with, type "help topics".
-
-If you're unsure where to turn, try http://www.allaboutcounseling.com/""",
-    }
 
     width = 80 # FIXME
 
