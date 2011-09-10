@@ -1,8 +1,65 @@
 import ctypes
+import itertools
 import os
 import sys
+import traceback
 
 import ds_basic
+import lledit_threads
+
+class ShellJob(lledit_threads.Job):
+    def __init__(self, description, shell, f, args=(), kwargs={}):
+        kwargs = kwargs.copy()
+        kwargs['progresscb'] = self.on_progress
+        lledit_threads.Job.__init__(self, f , args, kwargs, self.on_finished)
+        self.background = False
+        self.canceled = False
+        self.show_progress = False
+        self.description = description
+        self.shell = shell
+
+    def on_finished(self, job):
+        if self.canceled:
+            self.shell.prnt("Job %s (%s) canceled." % (self.id, self.description))
+        elif self.background:
+            self.shell.prnt("Job %s (%s) finished." % (self.id, self.description))
+
+    def on_progress(self, part, whole, *args):
+        if self.canceled:
+            raise KeyboardInterrupt()
+        elif self.show_progress and not self.background:
+            pass # FIXME
+
+class ShellListJob(ShellJob):
+    def __init__(self, shell, dsid):
+        self.datastore = shell.session.open(dsid, '<temporary>')
+        try:
+            self.string_dsid = ds_basic.dsid_to_bytes(self.datastore.dsid)
+            description = '<ls %s>' % self.string_dsid
+            ShellJob.__init__(self, description, shell, self.run)
+            self.results = []
+            self.datastore.addref(self.description)
+        finally:
+            self.datastore.release('<temporary>')
+
+    def on_finished(self, job):
+        ShellJob.on_finished(self, job)
+        if self.datastore:
+            self.datastore.release(self.description)
+        if not self.canceled:
+            if self.exception:
+                print 'ls in %s failed: %s' % (self.string_dsid, self.exception)
+            else:
+                self.shell.prnt("objects in %s:" % self.string_dsid)
+                for key in self.results:
+                    self.shell.prnt(ds_basic.key_to_bytes(key))
+
+    def run(self, progresscb):
+        self.results = []
+        for key in self.datastore.enum_keys(progresscb=progresscb):
+            if self.canceled:
+                break
+            self.results.append(key)
 
 class Shell(object):
     easteregg_strings = {
@@ -34,6 +91,7 @@ To see a list of all commands and help topics, type "help topics\""""
 
     def __init__(self):
         self.session = ds_basic.Session()
+        self.threadpool = lledit_threads.ThreadPool()
         self.cwd = self.session.open(('FileSystem', os.getcwd()), '<current object>')
         # switch to some other directory, so we don't prevent this one's deletion
         if os.path.sep == '/':
@@ -43,6 +101,7 @@ To see a list of all commands and help topics, type "help topics\""""
             buf = ctypes.create_unicode_buffer(260)
             ctypes.windll.kernel32.GetWindowsDirectoryW(buf, 260)
             os.chdir(buf.value)
+        self.jobs = {}
 
     def prnt(self, string):
         print string
@@ -58,8 +117,10 @@ To see a list of all commands and help topics, type "help topics\""""
         args = string.split(' ')
         i = 0
         while i < len(args) - 1:
-            if not args[i] or (args[i].count('"') % 2 == 1):
-                args[i] = args[i] + args.pop(i+1)
+            if (args[i].count('"') % 2 == 1):
+                args[i] = args[i] + ' ' + args.pop(i+1)
+            elif not args[i]:
+                args.pop(i)
             else:
                 i += 1
         if args and not args[i]:
@@ -77,6 +138,10 @@ To see a list of all commands and help topics, type "help topics\""""
             try:
                 cmd = self.readline(self.prompt())
                 args = self.split(cmd)
+
+                if cmd[0] != 'quit':
+                    self.threadpool.refresh()
+
                 if args:
                     try:
                         func = getattr(self, 'cmd_' + args[0])
@@ -84,8 +149,12 @@ To see a list of all commands and help topics, type "help topics\""""
                         self.prnt('I don\'t understand "%s". Type "help" if you need help.' % args[0])
                     else:
                         func(args[1:])
+
+                self.threadpool.refresh()
             except KeyboardInterrupt:
                 self.prnt('Type "quit -f" if you really want to quit now')
+            except BaseException, e:
+                traceback.print_exc()
 
         self.quits -= 1
 
@@ -147,6 +216,36 @@ Prints hopefully helpful information. You're using it right now."""
 
 Print the id of the object you're currently working with."""
         self.prnt(ds_basic.dsid_to_bytes(self.cwd.dsid))
+
+    def bytes_to_dsid(self, b):
+        return ds_basic.bytes_to_dsid(b, self.cwd.dsid)
+
+    def cmd_ls(self, argv):
+        """usage: ls [path]
+
+List the objects contained by the current object, or a given path."""
+        if len(argv) == 0:
+            dsid = self.cwd.dsid
+        else:
+            dsid = self.bytes_to_dsid(argv[0])
+
+        job = ShellListJob(self, dsid)
+
+        self.threadpool.queue_job(job)
+
+        try:
+            self.threadpool.wait_for_job(job, 0.2)
+            if not job.finished:
+                job.show_progress = True
+                self.threadpool.wait_for_job(job)
+        except KeyboardInterrupt:
+            if not job.finished:
+                for i in itertools.count():
+                    if i not in self.jobs:
+                        break
+                job.background = True
+                self.jobs[i] = job
+                self.prnt('Running job %i: %s in the background; use "cancel %i" to stop' % (i, job.description, i))
 
 def main(argv):
     s = Shell()

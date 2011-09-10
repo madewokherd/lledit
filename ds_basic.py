@@ -45,6 +45,9 @@ class Session(object):
 
         dsid = tuple(dsid)
 
+        if len(dsid) == 0:
+            raise NotImplementedError("No root object exists yet")
+
         try:
             while True:
                 with self.lock:
@@ -150,6 +153,16 @@ class DataStore(object):
                 return self.dsid, type(self)
             else:
                 return (self.dsid + (key,)), Slice
+        elif key is PARENT:
+            dsid = self.get_parent_dsid()
+            if dsid == ():
+                raise NotImplementedError("No root object exists yet")
+            else:
+                grandparent_datastore = self.session.open(dsid[0:-1], '<temporary>')
+                try:
+                    return grandparent_datastore.get_child_dsid(dsid[-1])
+                finally:
+                    grandparent_datastore.release('<temporary>')
 
     def get_parent_dsid(self):
         if len(self.dsid) == 1:
@@ -326,7 +339,7 @@ class FileSystemObject(DataStore):
         elif path != self.path:
             return ('FileSystem', path)
         else:
-            return None
+            return ()
 
     def do_free(self):
         if self.fd is not None:
@@ -346,6 +359,8 @@ def key_to_bytes(key):
     if isinstance(key, bytes):
         # FIXME: escape any unprintable characters
         return '"' + key.replace('"', '%22') + '"'
+    elif key is STAT:
+        return 'stat'
 
 def get_dsid(datastore):
     path_elements = []
@@ -358,6 +373,51 @@ def get_dsid(datastore):
 
 def dsid_to_bytes(dsid):
     return '/' + '/'.join(key_to_bytes(key) for key in dsid)
+
+def bytes_to_dsid(b, base, aliases={}):
+    pieces = b.split('/')
+    result = list(base)
+    at_start = True
+
+    if pieces[0] == '':
+        result = []
+        pieces = pieces[1:]
+
+    i = 0
+    while i < len(pieces) - 1:
+        if (pieces[i].count('"') % 2 == 1):
+            pieces[i] = pieces[i] + '/' + pieces.pop(i+1)
+        elif not pieces[i]:
+            pieces.pop(i)
+        else:
+            i += 1
+    if pieces and not pieces[i]:
+        pieces.pop(i)
+
+    for piece in pieces:
+        if piece.startswith('"'):
+            result.append(piece[1:-1].replace('""', '"'))
+        elif piece == '.':
+            pass
+        elif piece == '..':
+            result.append(PARENT)
+        elif piece == 'stat':
+            result.append(STAT)
+        elif piece[0].isdigit():
+            if piece.endswith('...'):
+                result.append(CharacterRange(int(piece[0:-3]), END))
+            elif '..' in piece:
+                start, end = piece.split('..')
+                result.append(CharacterRange(int(start), int(end)))
+            else:
+                result.append(int(piece))
+        elif at_start and piece in aliases:
+            result = list(aliases[piece])
+        else:
+            result.append(piece)
+        at_start = False
+
+    return tuple(result)
 
 # FIXME
 roots = {
