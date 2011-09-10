@@ -361,6 +361,19 @@ def key_to_bytes(key):
         return '"' + key.replace('"', '%22') + '"'
     elif key is STAT:
         return 'stat'
+    elif isinstance(key, CharacterRange):
+        if key.end is END:
+            return '%s...' % key.start
+        else:
+            return '%s..%s' % (key.start, key.end)
+    elif key is PARENT:
+        return '..'
+    elif isinstance(key, int):
+        return str(key)
+    elif isinstance(key, type) and issubclass(key, DataStore):
+        return '?' + key.name
+    else:
+        raise ValueError("invalid key")
 
 def get_dsid(datastore):
     path_elements = []
@@ -411,6 +424,8 @@ def bytes_to_dsid(b, base, aliases={}):
                 result.append(CharacterRange(int(start), int(end)))
             else:
                 result.append(int(piece))
+        elif piece[0] == '?':
+            raise NotImplementedError("'interpret as' objects not implemented yet")
         elif at_start and piece in aliases:
             result = list(aliases[piece])
         else:
