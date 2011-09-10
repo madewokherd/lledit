@@ -1,12 +1,14 @@
-
+import ctypes
+import os
 import sys
+
+import ds_basic
 
 class Shell(object):
     help_strings = {
         'default':
 """The most broadly useful commands are:
    quit        Quit lledit
-   pwd         Find out where you are (directory, file, or part of a file)
    ls          Find out where you can go
    cd          Change where you are
    read        View the data in an object (usually a file)
@@ -29,6 +31,18 @@ If you're unsure where to turn, try http://www.allaboutcounseling.com/""",
     width = 80 # FIXME
 
     quits = 0
+
+    def __init__(self):
+        self.session = ds_basic.Session()
+        self.cwd = self.session.open(('FileSystem', os.getcwd()), '<current object>')
+        # switch to some other directory, so we don't prevent this one's deletion
+        if os.path.sep == '/':
+            os.chdir('/')
+        elif os.path.sep == '\\':
+            # We can't rely on a C:\\windows or even any envvars, so get the windows directory with an API call
+            buf = ctypes.create_unicode_buffer(260)
+            ctypes.windll.kernel32.GetWindowsDirectoryW(buf, 260)
+            os.chdir(buf.value)
 
     def prnt(self, string):
         print string
@@ -53,7 +67,7 @@ If you're unsure where to turn, try http://www.allaboutcounseling.com/""",
         return args
 
     def prompt(self):
-        return '>>> ' # FIXME: show the working directory
+        return '%s> ' % ds_basic.dsid_to_bytes(self.cwd.dsid)
 
     def run(self):
         self.prnt("lledit shell")
@@ -127,6 +141,12 @@ Prints hopefully helpful information. You're using it right now."""
                 self.prnt(string)
                 return
         self.prnt('I don\'t know anything about "%s"' % topic)
+
+    def cmd_pwd(self, argv):
+        """usage: pwd
+
+Print the id of the object you're currently working with."""
+        self.prnt(ds_basic.dsid_to_bytes(self.cwd.dsid))
 
 def main(argv):
     s = Shell()

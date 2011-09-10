@@ -198,7 +198,7 @@ class FileSystemObject(DataStore):
         else:
             path = dsid[-1]
         if path is not None:
-            path = os.path.normpath(path)        
+            path = os.path.abspath(path)        
         elif os.path.sep == '/':
             path = '/'
         self.path = path
@@ -274,7 +274,7 @@ class FileSystemObject(DataStore):
             if isinstance(key, unicode):
                 key = key.encode('utf8')
             if self.path is not None:
-                key = os.path.join(self.path, key)
+                key = os.path.normpath(os.path.join(self.path, key))
             if key == '/':
                 return ('FileSystem',), FileSystemObject
             else:
@@ -322,7 +322,11 @@ class FileSystemObject(DataStore):
         path = os.path.dirname(self.path)
         if os.path.sep == '\\' and path == self.path:
             # drive root
-        
+            return ('FileSystem',)
+        elif path != self.path:
+            return ('FileSystem', path)
+        else:
+            return None
 
     def do_free(self):
         if self.fd is not None:
@@ -351,6 +355,9 @@ def get_dsid(datastore):
             return None
         path_elements.insert(0, key)
     return tuple(path_elements)
+
+def dsid_to_bytes(dsid):
+    return '/' + '/'.join(key_to_bytes(key) for key in dsid)
 
 # FIXME
 roots = {
