@@ -267,7 +267,7 @@ Print the id of the object you're currently working with."""
         self.prnt(ds_basic.dsid_to_bytes(self.cwd.dsid))
 
     def bytes_to_dsid(self, b):
-        return ds_basic.bytes_to_dsid(b, self.cwd.dsid)
+        return ds_basic.bytes_to_dsid(b, self.cwd.dsid, self.session)
 
     def do_job(self, job):
         self.threadpool.queue_job(job)

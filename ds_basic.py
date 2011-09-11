@@ -34,6 +34,8 @@ ALL = CharacterRange(0, END)
 DSTypeInfo = collections.namedtuple('DSTypeInfo', ('name', 'module', 'type'))
 TopLevelInfo = collections.namedtuple('TopLevelInfo', ('key', 'typename'))
 
+BrokenData = collections.namedtuple('BrokenData', ('description'))
+
 def do_nothing(*args, **kwargs):
     pass
 
@@ -42,8 +44,9 @@ class Session(object):
         self.open_datastores = {}
         self.lock = threading.RLock()
         self.root = self.open_datastores[()] = Root(self, '<root>', ())
-        self.modules = [__import__('ds_basic')]
+        self.modules = [__import__('ds_basic'), __import__('ds_imaging')]
         self.refresh_modules()
+        self.aliases = {}
 
     def refresh_modules(self):
         datastore_types = {}
@@ -407,7 +410,9 @@ def key_to_bytes(key):
     elif isinstance(key, int):
         return str(key)
     elif isinstance(key, type) and issubclass(key, DataStore):
-        return '?' + key.name
+        return '?' + key.__name__
+    elif isinstance(key, BrokenData):
+        return 'WARNING: %s' % key.description
     else:
         raise ValueError("invalid key")
 
@@ -423,7 +428,7 @@ def get_dsid(datastore):
 def dsid_to_bytes(dsid):
     return '/' + '/'.join(key_to_bytes(key) for key in dsid)
 
-def bytes_to_dsid(b, base, aliases={}):
+def bytes_to_dsid(b, base, session):
     pieces = b.split('/')
     result = list(base)
     at_start = True
@@ -461,9 +466,9 @@ def bytes_to_dsid(b, base, aliases={}):
             else:
                 result.append(int(piece))
         elif piece[0] == '?':
-            raise NotImplementedError("'interpret as' objects not implemented yet")
-        elif at_start and piece in aliases:
-            result = list(aliases[piece])
+            result.append(session.datastore_types[piece[1:].lower()].type)
+        elif at_start and piece in session.aliases:
+            result = aliases[piece].dsid
         else:
             result.append(piece)
         at_start = False
