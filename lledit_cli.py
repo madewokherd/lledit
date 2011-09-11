@@ -1,6 +1,7 @@
 import ctypes
 import itertools
 import os
+import readline
 import sys
 import traceback
 
