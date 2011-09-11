@@ -392,7 +392,7 @@ def key_to_bytes(key):
         # FIXME: escape any unprintable characters
         return '"' + key.replace('"', '%22') + '"'
     elif key is STAT:
-        return 'stat'
+        return 'Stat'
     elif isinstance(key, CharacterRange):
         if key.end is END:
             return '%s...' % key.start
@@ -446,7 +446,7 @@ def bytes_to_dsid(b, base, aliases={}):
             pass
         elif piece == '..':
             result.append(PARENT)
-        elif piece == 'stat':
+        elif piece.lower() == 'stat':
             result.append(STAT)
         elif piece[0].isdigit():
             if piece.endswith('...'):
