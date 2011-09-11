@@ -110,6 +110,12 @@ class Session(object):
 
         return result
 
+def sample_string(string, length):
+    bytes = string.encode('string_escape')
+    if len(bytes) > length:
+        bytes = bytes[0:length] + '...'
+    return "'" + bytes + "'"
+
 class DataStore(object):
     def __init__(self, session, referrer, dsid):
         """__init__ for DataStore objects should just initialize data structures
@@ -210,10 +216,8 @@ class DataStore(object):
 
     def get_description(self):
         try:
-            bytes = self.read_bytes(CharacterRange(0, 21))
-            if len(bytes) == 21:
-                bytes = bytes[0:20] + '...'
-            return repr(bytes)
+            bytes = self.read_bytes(CharacterRange(0, 21)).encode('string_escape')
+            return sample_string(bytes, 20)
         except:
             return type(self).__name__
 
@@ -304,6 +308,22 @@ class UIntBE(Data):
     def get_description(self):
         return str(self.bytes_to_int(self.read_bytes()))
 
+class CString(Data):
+    def get_description(self):
+        bytes = self.read_bytes()
+        if bytes.endswith('\0'):
+            bytes = sample_string(bytes[0:-1], 20)
+        else:
+            bytes = sample_string(bytes, 20) + ' (missing NULL terminator)'
+        return bytes
+
+class Boolean(UIntBE):
+    def get_description(self):
+        if self.read_bytes().remove('\0'):
+            return 'True'
+        else:
+            return 'False'
+
 class Enumeration(Data):
     def get_description(self):
         value = self.read_bytes()
@@ -373,6 +393,10 @@ class Structure(Data):
                     value = value.lower()
                     ref_field = fields[value]
                     end = ref_field.end
+                elif setting == 'stopatnul':
+                    data = self.read_bytes(CharacterRange(start, end))
+                    if '\0' in data:
+                        end = data.index('\0') + start + 1
                 else:
                     raise TypeError("unknown structure field setting: %s" % setting)
 
@@ -418,6 +442,7 @@ class Structure(Data):
             if key.lower() in fields:
                 field = fields[key.lower()]
                 return CharacterRange(field.start, field.end)
+            raise ValueError("Structure of type %s has no field %s\n" % (type(self).__name__, key))
         return DataStore.locate_field(self, key)
 
 class FileSystemStat(DataStore):

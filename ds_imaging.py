@@ -97,14 +97,99 @@ class PngHeader(ds_basic.Structure):
         ('InterlaceMethod', PngInterlaceMethod, 'size', 1),
         )
 
+class PngChromaticities(ds_basic.Structure):
+    __fields__ = (
+        ('WhitePointX', ds_basic.UIntBE, 'size', 4),
+        ('WhitePointY', ds_basic.UIntBE, 'size', 4),
+        ('RedX', ds_basic.UIntBE, 'size', 4),
+        ('RedY', ds_basic.UIntBE, 'size', 4),
+        ('GreenX', ds_basic.UIntBE, 'size', 4),
+        ('GreenY', ds_basic.UIntBE, 'size', 4),
+        ('BlueX', ds_basic.UIntBE, 'size', 4),
+        ('BlueY', ds_basic.UIntBE, 'size', 4),
+        )
+
+class PngRenderingIntent(ds_basic.Enumeration):
+    __values__ = (
+        ('Perceptual', '\x00'),
+        ('RelativeColorimetric', '\x01'),
+        ('Saturation', '\x02'),
+        ('AbsoluteColorimetric', '\x03'),
+        )
+
+class PngIccProfile(ds_basic.Structure):
+    __fields__ = (
+        ('ProfileName', ds_basic.CString, 'size', 80, 'stopatnul', True),
+        ('CompressionMethod', PngCompressionMethod, 'size', 1),
+        ('CompressedProfile', ds_basic.Data),
+        )
+    # FIXME: Test this and make it possible to uncompress the data
+
+class PngText(ds_basic.Structure):
+    __fields__ = (
+        ('Keyword', ds_basic.CString, 'size', 80, 'stopatnul', True),
+        ('Text', ds_basic.Data),
+        )
+
+class PngTextZ(ds_basic.Structure):
+    __fields__ = (
+        ('Keyword', ds_basic.CString, 'size', 80, 'stopatnul', True),
+        ('CompressionMethod', PngCompressionMethod, 'size', 1),
+        ('CompressedText', ds_basic.Data),
+        )
+    # FIXME: Test this and make it possible to uncompress the data
+
+class PngTextI(ds_basic.Structure):
+    __fields__ = (
+        ('Keyword', ds_basic.CString, 'size', 80, 'stopatnul', True),
+        ('CompressionFlag', ds_basic.Boolean, 'size', 1),
+        ('CompressionMethod', PngCompressionMethod, 'size', 1),
+        ('LanguageTag', ds_basic.CString, 'stopatnul', True),
+        ('TranslatedKeyword', ds_basic.CString, 'stopatnul', True),
+        ('RawText', ds_basic.Data),
+        )
+    # FIXME: Test this and make it possible to uncompress the data
+
+class PngPhysUnit(ds_basic.Enumeration):
+    __values__ = (
+        ('Unknown', '\x00'),
+        ('Meter', '\x01'),
+        )
+
+class PngPhys(ds_basic.Structure):
+    __fields__ = (
+        ('XPixelsPerUnit', ds_basic.UIntBE, 'size', 4),
+        ('YPixelsPerUnit', ds_basic.UIntBE, 'size', 4),
+        ('Unit', PngPhysUnit, 'size', 1),
+        )
+
+# FIXME: sPLt not parsed because it's too complicated for Structure
+
+class PngTime(ds_basic.Structure):
+    __fields__ = (
+        ('Year', ds_basic.UIntBE, 'size', 2),
+        ('Month', ds_basic.UIntBE, 'size', 1),
+        ('Day', ds_basic.UIntBE, 'size', 1),
+        ('Hour', ds_basic.UIntBE, 'size', 1),
+        ('Minute', ds_basic.UIntBE, 'size', 1),
+        ('Second', ds_basic.UIntBE, 'size', 1),
+        )
+
 class PngChunk(ds_basic.Structure):
     __fields__ = (
         ('Length', ds_basic.UIntBE, 'size', 4),
         ('Type', ds_basic.Data, 'size', 4),
         ('RawData', ds_basic.Data, 'size_is', 'Length'),
         ('CRC', PngChunkCrc, 'size', 4),
-        ('ExtraData', ds_basic.Data, 'optional', True),
         ('Header', PngHeader, 'ifequal', ('Type', 'IHDR'), 'starts_with', 'RawData', 'ends_with', 'RawData'),
+        ('Gamma', ds_basic.UIntBE, 'ifequal', ('Type', 'gAMA'), 'starts_with', 'RawData', 'size', 4),
+        ('Chromaticities', PngChromaticities, 'ifequal', ('Type', 'cHRM'), 'starts_with', 'RawData', 'ends_with', 'RawData'),
+        ('IccProfile', PngIccProfile, 'ifequal', ('Type', 'iCCP'), 'starts_with', 'RawData', 'ends_with', 'RawData'),
+        ('Text', PngText, 'ifequal', ('Type', 'tEXt'), 'starts_with', 'RawData', 'ends_with', 'RawData'),
+        ('TextZ', PngTextZ, 'ifequal', ('Type', 'xTXt'), 'starts_with', 'RawData', 'ends_with', 'RawData'),
+        ('TextI', PngTextI, 'ifequal', ('Type', 'iTXt'), 'starts_with', 'RawData', 'ends_with', 'RawData'),
+        ('PhysicalDimensions', PngPhys, 'ifequal', ('Type', 'pHYs'), 'starts_with', 'RawData', 'ends_with', 'RawData'),
+        ('MTime', PngTime, 'ifequal', ('Type', 'tIME'), 'starts_with', 'RawData', 'ends_with', 'RawData'),
         )
 
     def get_description(self):
