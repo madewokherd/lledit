@@ -61,18 +61,50 @@ class Png(ds_basic.Data):
 class PngChunkCrc(ds_basic.UIntBE):
     pass
 
+class PngColorType(ds_basic.Enumeration):
+    __values__ = (
+        ('Grayscale', '\x00'),
+        ('RGB', '\x02'),
+        ('Palette', '\x03'),
+        ('Grayscale+Alpha', '\x04'),
+        ('RGBA', '\x06'),
+        )
+
+class PngCompressionMethod(ds_basic.Enumeration):
+    __values__ = (
+        ('Deflate', '\x00'),
+        )
+
+class PngFilterMethod(ds_basic.Enumeration):
+    __values__ = (
+        ('Adaptive', '\x00'),
+        )
+
+class PngInterlaceMethod(ds_basic.Enumeration):
+    __values__ = (
+        ('None', '\x00'),
+        ('Adam7', '\x01'),
+        )
+
+class PngHeader(ds_basic.Structure):
+    __fields__ = (
+        ('Width', ds_basic.UIntBE, 'size', 4),
+        ('Height', ds_basic.UIntBE, 'size', 4),
+        ('BitDepth', ds_basic.UIntBE, 'size', 1),
+        ('ColorType', PngColorType, 'size', 1),
+        ('CompressionMethod', PngCompressionMethod, 'size', 1),
+        ('FilterMethod', PngFilterMethod, 'size', 1),
+        ('InterlaceMethod', PngInterlaceMethod, 'size', 1),
+        )
+
 class PngChunk(ds_basic.Structure):
-    def __init__(self, session, referrer, dsid):
-        ds_basic.Structure.__init__(self, session, referrer, dsid)
-
-    subfields = True
-
     __fields__ = (
         ('Length', ds_basic.UIntBE, 'size', 4),
         ('Type', ds_basic.Data, 'size', 4),
         ('RawData', ds_basic.Data, 'size_is', 'Length'),
         ('CRC', PngChunkCrc, 'size', 4),
         ('ExtraData', ds_basic.Data, 'optional', True),
+        ('Header', PngHeader, 'ifequal', ('Type', 'IHDR'), 'starts_with', 'RawData', 'ends_with', 'RawData'),
         )
 
     def get_description(self):

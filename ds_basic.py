@@ -304,6 +304,16 @@ class UIntBE(Data):
     def get_description(self):
         return str(self.bytes_to_int(self.read_bytes()))
 
+class Enumeration(Data):
+    def get_description(self):
+        value = self.read_bytes()
+        for enum_name, enum_value in self.__values__:
+            if value == enum_value:
+                return enum_name
+        return Data.get_description(self)
+
+    __values__ = ()
+
 class Structure(Data):
     def _check_byte(self, ofs, checked_bytes):
         if ofs in checked_bytes or ofs is END:
@@ -329,6 +339,7 @@ class Structure(Data):
             start = ofs
             end = END
             optional = False
+            skip = False
 
             for i in range(2, len(field), 2):
                 setting, value = field[i:i+2]
@@ -344,8 +355,29 @@ class Structure(Data):
                     end = start + size
                 elif setting == 'optional':
                     optional = True
+                elif setting == 'ifequal':
+                    value, expected_data = value
+                    value = value.lower()
+                    ref_field = fields[value]
+                    if value not in field_data:
+                        field_data[value] = self.read_bytes(CharacterRange(ref_field.start, ref_field.end))
+                    data = field_data[value]
+                    if data != expected_data:
+                        skip = True
+                        break
+                elif setting == 'starts_with':
+                    value = value.lower()
+                    ref_field = fields[value]
+                    start = ref_field.start
+                elif setting == 'ends_with':
+                    value = value.lower()
+                    ref_field = fields[value]
+                    end = ref_field.end
                 else:
                     raise TypeError("unknown structure field setting: %s" % setting)
+
+            if skip:
+                continue
 
             ofs = end
 
