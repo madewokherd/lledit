@@ -50,7 +50,7 @@ class ShellListJob(ShellJob):
             if self.exception:
                 print 'ls in %s failed: %s' % (self.string_dsid, self.exception)
             else:
-                self.shell.prnt("objects in %s:" % self.string_dsid)
+                self.shell.prnt("%i objects in %s:" % (len(self.results), self.string_dsid))
                 for key in self.results:
                     self.shell.prnt(ds_basic.key_to_bytes(key))
 
@@ -246,6 +246,12 @@ List the objects contained by the current object, or a given path."""
                 job.background = True
                 self.jobs[i] = job
                 self.prnt('Running job %i: %s in the background; use "cancel %i" to stop' % (i, job.description, i))
+
+    def cmd_dir(self, argv):
+        """usage: dir [path]
+
+List the objects contained by the current object, or a given path."""
+        return self.cmd_ls(argv)
 
 def main(argv):
     s = Shell()
