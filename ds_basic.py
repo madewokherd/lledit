@@ -31,6 +31,9 @@ CharacterRange = collections.namedtuple('CharacterRange', ('start', 'end'))
 
 ALL = CharacterRange(0, END)
 
+DSTypeInfo = collections.namedtuple('DSTypeInfo', ('name', 'module', 'type'))
+TopLevelInfo = collections.namedtuple('TopLevelInfo', ('key', 'typename'))
+
 def do_nothing(*args, **kwargs):
     pass
 
@@ -50,10 +53,10 @@ class Session(object):
             for name in dir(module):
                 obj = getattr(module, name)
                 if isinstance(obj, type) and issubclass(obj, DataStore):
-                    datastore_types[name] = obj
+                    datastore_types[name.lower()] = DSTypeInfo(name, module, obj)
                     if '__toplevels__' in obj.__dict__:
                         for key in obj.__dict__['__toplevels__']:
-                            toplevels[key] = obj
+                            toplevels[key.lower()] = TopLevelInfo(key, name.lower())
 
         self.datastore_types = datastore_types
         self.toplevels = toplevels
@@ -190,11 +193,12 @@ class Root(DataStore):
         DataStore.__init__(self, session, referrer, dsid)
 
     def enum_keys(self, progresscb=do_nothing):
-        return iter(self.session.toplevels)
+        for toplevel in self.session.toplevels:
+            yield toplevel.key
 
     def get_child_dsid(self, key):
-        if key in self.session.toplevels:
-            return (key,), self.session.toplevels[key]
+        if isinstance(key, basestring) and key.lower() in self.session.toplevels:
+            return (self.session.toplevels[key.lower()].key,), self.session.datastore_types[self.session.toplevels[key.lower()].typename].type
         else:
             return DataStore.get_child_dsid(self, key)
 
