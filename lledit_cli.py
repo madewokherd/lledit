@@ -253,6 +253,26 @@ List the objects contained by the current object, or a given path."""
 List the objects contained by the current object, or a given path."""
         return self.cmd_ls(argv)
 
+    def cmd_cd(self, argv):
+        """usage: cd path
+
+Change the current working object to the given path."""
+
+        if len(argv) == 0:
+            self.prnt("cd: requires a path")
+            return
+
+        dsid = self.bytes_to_dsid(argv[0])
+
+        new_cwd = self.session.open(dsid, '<current object>')
+
+        try:
+            self.cwd.release('<current object>')
+            self.cwd = new_cwd
+        except:
+            new_cwd.release('<current object>')
+            raise
+
 def main(argv):
     s = Shell()
     return s.run()
