@@ -38,15 +38,31 @@ class Session(object):
     def __init__(self):
         self.open_datastores = {}
         self.lock = threading.RLock()
+        self.root = self.open_datastores[()] = Root(self, '<root>', ())
+        self.modules = [__import__('ds_basic')]
+        self.refresh_modules()
+
+    def refresh_modules(self):
+        datastore_types = {}
+        toplevels = {}
+
+        for module in self.modules:
+            for name in dir(module):
+                obj = getattr(module, name)
+                if isinstance(obj, type) and issubclass(obj, DataStore):
+                    datastore_types[name] = obj
+                    if '__toplevels__' in obj.__dict__:
+                        for key in obj.__dict__['__toplevels__']:
+                            toplevels[key] = obj
+
+        self.datastore_types = datastore_types
+        self.toplevels = toplevels
 
     def open(self, dsid, referrer):
         to_release = []
         result = None
 
         dsid = tuple(dsid)
-
-        if len(dsid) == 0:
-            raise NotImplementedError("No root object exists yet")
 
         try:
             while True:
@@ -58,19 +74,15 @@ class Session(object):
 
                     i = len(dsid) - 1
 
-                    while i > 0:
+                    while i >= 0:
                         if dsid[0:i] in self.open_datastores:
                             result = self.open_datastores[dsid[0:i]]
                             break
                         i -= 1
+                    else:
+                        raise Exception("This should never happen; no root object?")
 
-                if i == 0:
-                    intermediate_dsid = (dsid[0],)
-                    with self.lock:
-                        if intermediate_dsid not in self.open_datastores:
-                            self.open_datastores[intermediate_dsid] = roots[dsid[0]](self, '<temporary>', intermediate_dsid)
-                            to_release.append(self.open_datastores[intermediate_dsid])
-                elif i < len(dsid):
+                if i < len(dsid):
                     intermediate_dsid, klass = result.get_child_dsid(dsid[i])
                     if intermediate_dsid == dsid[0:i+1]:
                         with self.lock:
@@ -138,7 +150,7 @@ class DataStore(object):
         self.references.append(result)
         return result
 
-    def enum_keys(self):
+    def enum_keys(self, progresscb=do_nothing):
         return iter(())
 
     def do_free(self):
@@ -156,18 +168,38 @@ class DataStore(object):
         elif key is PARENT:
             dsid = self.get_parent_dsid()
             if dsid == ():
-                raise NotImplementedError("No root object exists yet")
+                return (), Root
             else:
                 grandparent_datastore = self.session.open(dsid[0:-1], '<temporary>')
                 try:
                     return grandparent_datastore.get_child_dsid(dsid[-1])
                 finally:
                     grandparent_datastore.release('<temporary>')
+        else:
+            raise ValueError("Invalid dsid: %s / %s" % (self.dsid, key))
 
     def get_parent_dsid(self):
         if len(self.dsid) == 1:
             return None
         return self.dsid[0:-1]
+
+class Root(DataStore):
+    def __init__(self, session, referrer, dsid):
+        if dsid != ():
+            raise ValueError("Root object created with non-empty dsid")
+        DataStore.__init__(self, session, referrer, dsid)
+
+    def enum_keys(self, progresscb=do_nothing):
+        return iter(self.session.toplevels)
+
+    def get_child_dsid(self, key):
+        if key in self.session.toplevels:
+            return (key,), self.session.toplevels[key]
+        else:
+            return DataStore.get_child_dsid(self, key)
+
+    def get_parent_dsid(self):
+        return ()
 
 class Slice(DataStore):
     def __init__(self, session, referrer, dsid):
@@ -202,7 +234,7 @@ class Slice(DataStore):
             return DataStore.get_child_dsid(self, key)
 
 class FileSystemObject(DataStore):
-    __ds_rootname__ = "FileSystem"
+    __toplevels__ = ("FileSystem",)
 
     def __init__(self, session, referrer, dsid):
         DataStore.__init__(self, session, referrer, dsid)
@@ -433,9 +465,4 @@ def bytes_to_dsid(b, base, aliases={}):
         at_start = False
 
     return tuple(result)
-
-# FIXME
-roots = {
-    'FileSystem': FileSystemObject,
-    }
 
