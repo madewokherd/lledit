@@ -196,7 +196,14 @@ class DataStore(object):
         return self.dsid[0:-1]
 
     def read_field_bytes(self, key, r=ALL, progresscb=do_nothing):
-        return self.read_bytes(r, progresscb)
+        try:
+            field_range = self.locate_field(key)
+        except TypeError:
+            field_range = ALL
+        return self.read_bytes(translate_range(field_range, r), progresscb)
+
+    def locate_field(self, key):
+        raise TypeError
 
     def read_bytes(self, r=ALL, progresscb=do_nothing):
         raise TypeError
@@ -291,7 +298,7 @@ class UIntBE(Data):
     def bytes_to_int(cls, data):
         result = 0
         for c in data:
-            result = result << 8 | ord(c)
+            result = (result << 8) | ord(c)
         return result
 
     def get_description(self):
@@ -301,7 +308,7 @@ class Structure(Data):
     def _check_byte(self, ofs, checked_bytes):
         if ofs in checked_bytes or ofs is END:
             return True
-        if self.parent.read_bytes(CharacterRange(ofs, ofs + 1)):
+        if self.read_bytes(CharacterRange(ofs, ofs + 1)):
             checked_bytes.add(ofs)
             return True
         else:
@@ -321,6 +328,7 @@ class Structure(Data):
 
             start = ofs
             end = END
+            optional = False
 
             for i in range(2, len(field), 2):
                 setting, value = field[i:i+2]
@@ -330,10 +338,12 @@ class Structure(Data):
                     value = value.lower()
                     ref_field = fields[value]
                     if value not in field_data:
-                        field_data[value] = self.parent.read_bytes(CharacterRange(ref_field.start, ref_field.end))
+                        field_data[value] = self.read_bytes(CharacterRange(ref_field.start, ref_field.end))
                     data = field_data[value]
                     size = ref_field.type.bytes_to_int(data)
                     end = start + size
+                elif setting == 'optional':
+                    optional = True
                 else:
                     raise TypeError("unknown structure field setting: %s" % setting)
 
@@ -341,9 +351,10 @@ class Structure(Data):
 
             if start != end:
                 if not self._check_byte(start, checked_bytes):
-                    warnings.append(BrokenData('Missing field %s' % name))
+                    if not optional:
+                        warnings.append(BrokenData('Missing field %s' % name))
                     continue
-                elif not self._check_byte(end, checked_bytes):
+                elif end is not END and not self._check_byte(end-1, checked_bytes):
                     warnings.append(BrokenData('Truncated field %s' % name))
 
             fields[name.lower()] = StructFieldInfo(name, klass, start, end)
@@ -356,6 +367,8 @@ class Structure(Data):
 
         for field in field_order:
             yield field
+        for warning in warnings:
+            yield warning
 
     def get_child_dsid(self, key):
         if isinstance(key, basestring):
@@ -367,14 +380,13 @@ class Structure(Data):
         else:
             return DataStore.get_child_dsid(self, key)
 
-    def read_field_bytes(self, key, r=ALL, progresscb=do_nothing):
+    def locate_field(self, key):
         if isinstance(key, basestring):
             fields, warnings, field_order = self.locate_fields()
             if key.lower() in fields:
                 field = fields[key.lower()]
-                return self.read_bytes(translate_range(CharacterRange(field.start, field.end), r), progresscb)
-        else:
-            return DataStore.read_field_bytes(self, key, r, progresscb)
+                return CharacterRange(field.start, field.end)
+        return DataStore.locate_field(self, key)
 
 class FileSystemStat(DataStore):
     pass #TODO

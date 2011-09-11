@@ -8,13 +8,13 @@ class Png(ds_basic.Data):
 
     def enum_keys(self, progresscb=ds_basic.do_nothing):
         yield 'MagicNumber'
-        magic = self.parent.read_bytes(ds_basic.CharacterRange(0, 8))
+        magic = self.read_bytes(ds_basic.CharacterRange(0, 8))
         if magic not in self.__start_magics__:
             yield ds_basic.BrokenData('Incorrect magic number %s' % repr(magic))
 
         ofs = 8
         while True:
-            chunk_header = self.parent.read_bytes(ds_basic.CharacterRange(ofs, ofs+8))
+            chunk_header = self.read_bytes(ds_basic.CharacterRange(ofs, ofs+8))
             if not chunk_header:
                 # end of file
                 return
@@ -25,22 +25,38 @@ class Png(ds_basic.Data):
                 # not a valid chunk
                 break
             yield 'ChunkAt%i' % ofs
-            if self.parent.read_bytes(ds_basic.CharacterRange(ofs + 11 + length, ofs + 11 + length + 1)) == '':
+            if self.read_bytes(ds_basic.CharacterRange(ofs + 11 + length, ofs + 11 + length + 1)) == '':
                 yield ds_basic.BrokenData('Chunk at %i (length %i, type %s) is truncated' % (ofs, length, repr(chunk_type)))
             ofs += 12 + length
 
-        if self.parent.read_bytes(ds_basic.CharacterRange(ofs, ofs+1)) != '':
+        if self.read_bytes(ds_basic.CharacterRange(ofs, ofs+1)) != '':
             yield 'DataAt%i' % ofs
 
     def get_child_dsid(self, key):
-        if isinstance(key, basestring) and key.lower().startswith('chunkat'):
-            return (self.parent.dsid + (ds_basic.CharacterRange(int(key[7:]), ds_basic.END), PngChunk)), PngChunk
-        elif isinstance(key, basestring) and key.lower() == 'magicnumber':
-            return self.parent.get_child_dsid(ds_basic.CharacterRange(0, 8))
-        elif isinstance(key, basestring) and key.lower().startswith('dataat'):
-            return self.parent.get_child_dsid(ds_basic.CharacterRange(int(key[6:]), ds_basic.END))
+        if isinstance(key, basestring):
+            if key.lower().startswith('chunkat'):
+                return (self.dsid + ('ChunkAt' + key[7:],)), PngChunk
+            elif key.lower().startswith('magicnumber'):
+                return (self.dsid + ('MagicNumber',)), ds_basic.Data
+            elif key.lower().startswith('dataat'):
+                return (self.dsid + ('DataAt' + key[6:],)), ds_basic.Data
+            else:
+                raise ValueError("invalid field %s" % key)
         else:
             return ds_basic.DataStore.get_child_dsid(self, key)
+
+    def locate_field(self, key):
+        if isinstance(key, basestring):
+            if key.lower().startswith('chunkat'):
+                return ds_basic.CharacterRange(int(key[7:]), ds_basic.END)
+            elif key.lower().startswith('magicnumber'):
+                return ds_basic.CharacterRange(0, 8)
+            elif key.lower().startswith('dataat'):
+                return ds_basic.CharacterRange(int(key[6:]), ds_basic.END)
+            else:
+                raise ValueError("invalid field %s" % key)
+        else:
+            return ds_basic.DataStore.locate_field(self, key)
 
 class PngChunkCrc(ds_basic.UIntBE):
     pass
@@ -56,7 +72,7 @@ class PngChunk(ds_basic.Structure):
         ('Type', ds_basic.Data, 'size', 4),
         ('RawData', ds_basic.Data, 'size_is', 'Length'),
         ('CRC', PngChunkCrc, 'size', 4),
-        ('Next', ds_basic.Data),
+        ('ExtraData', ds_basic.Data, 'optional', True),
         )
 
     def get_description(self):

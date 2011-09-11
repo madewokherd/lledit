@@ -131,6 +131,7 @@ class WorkerThread(threading.Thread):
                     self.job.result = self.job.f(*self.job.args, **self.job.kwargs)
                 except BaseException, e:
                     self.job.exception = e
+                    self.job.traceback = traceback.format_exc()
                 finally:
                     self.job.finished = True
                     self.job = None

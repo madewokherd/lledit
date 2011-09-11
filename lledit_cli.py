@@ -51,7 +51,7 @@ class ShellListJob(ShellJob):
         self.datastore.release(self.description)
         if not self.canceled:
             if self.exception:
-                print 'ls in %s failed: %s' % (self.string_dsid, self.exception)
+                print 'ls in %s failed:\n%s' % (self.string_dsid, self.traceback)
             else:
                 self.shell.prnt("%i objects in %s:" % (len(self.results), self.string_dsid))
                 for i, key in enumerate(self.results):
@@ -71,15 +71,18 @@ class ShellListJob(ShellJob):
                 break
             self.results.append(key)
             if self.longformat:
-                self.maxlen = max(self.maxlen, len(ds_basic.key_to_bytes(key)))
-                item_datastore = self.datastore.open((key,), '<temporary>')
-                try:
-                    description = item_datastore.get_description()
-                except:
-                    description = 'Failure reading object'
-                finally:
-                    item_datastore.release('<temporary>')
-                self.descriptions.append(description)
+                if isinstance(key, ds_basic.BrokenData):
+                    self.descriptions.append('')
+                else:
+                    self.maxlen = max(self.maxlen, len(ds_basic.key_to_bytes(key)))
+                    item_datastore = self.datastore.open((key,), '<temporary>')
+                    try:
+                        description = item_datastore.get_description()
+                    except:
+                        description = 'Failure reading object'
+                    finally:
+                        item_datastore.release('<temporary>')
+                    self.descriptions.append(description)
 
 class ShellReadJob(ShellJob):
     def __init__(self, shell, dsid, hex_format, newline):
@@ -105,7 +108,7 @@ class ShellReadJob(ShellJob):
         self.datastore.release(self.description)
         if not self.canceled:
             if self.exception:
-                print 'reading %s failed: %s' % (self.string_dsid, self.exception)
+                print 'reading %s failed:\n%s' % (self.string_dsid, self.traceback)
             else:
                 if self.hex_format:
                     bytes_per_line = (self.shell.width + 1 / 3)
