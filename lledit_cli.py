@@ -8,15 +8,16 @@ import ds_basic
 import lledit_threads
 
 class ShellJob(lledit_threads.Job):
-    def __init__(self, description, shell, f, args=(), kwargs={}):
-        kwargs = kwargs.copy()
-        kwargs['progresscb'] = self.on_progress
-        lledit_threads.Job.__init__(self, f , args, kwargs, self.on_finished)
+    def __init__(self, description, shell):
+        lledit_threads.Job.__init__(self, self.run, (), {}, self.on_finished)
         self.background = False
         self.canceled = False
         self.show_progress = False
         self.description = description
         self.shell = shell
+
+    def run(self):
+        pass
 
     def on_finished(self, job):
         if self.canceled:
@@ -36,7 +37,7 @@ class ShellListJob(ShellJob):
         try:
             self.string_dsid = ds_basic.dsid_to_bytes(self.datastore.dsid)
             description = '<ls %s>' % self.string_dsid
-            ShellJob.__init__(self, description, shell, self.run)
+            ShellJob.__init__(self, description, shell)
             self.results = []
             self.datastore.addref(self.description)
         finally:
@@ -44,8 +45,7 @@ class ShellListJob(ShellJob):
 
     def on_finished(self, job):
         ShellJob.on_finished(self, job)
-        if self.datastore:
-            self.datastore.release(self.description)
+        self.datastore.release(self.description)
         if not self.canceled:
             if self.exception:
                 print 'ls in %s failed: %s' % (self.string_dsid, self.exception)
@@ -54,12 +54,58 @@ class ShellListJob(ShellJob):
                 for key in self.results:
                     self.shell.prnt(ds_basic.key_to_bytes(key))
 
-    def run(self, progresscb):
+    def run(self):
         self.results = []
-        for key in self.datastore.enum_keys(progresscb=progresscb):
+        for key in self.datastore.enum_keys(progresscb=self.on_progress):
             if self.canceled:
                 break
             self.results.append(key)
+
+class ShellReadJob(ShellJob):
+    def __init__(self, shell, dsid, hex_format, newline):
+        self.hex_format = hex_format
+        self.newline = newline
+        self.datastore = shell.session.open(dsid, '<temporary>')
+        try:
+            self.string_dsid = ds_basic.dsid_to_bytes(self.datastore.dsid)
+            description = '<read %s>' % self.string_dsid
+            ShellJob.__init__(self, description, shell)
+            self.results = []
+            self.datastore.addref(self.description)
+        finally:
+            self.datastore.release('<temporary>')
+
+    def on_progress(self, part, whole, data):
+        if data:
+            self.results.append(data)
+        ShellJob.on_progress(self, part, whole)
+
+    def on_finished(self, job):
+        ShellJob.on_finished(self, job)
+        self.datastore.release(self.description)
+        if not self.canceled:
+            if self.exception:
+                print 'reading %s failed: %s' % (self.string_dsid, self.exception)
+            else:
+                if self.hex_format:
+                    bytes_per_line = (self.shell.width + 1 / 3)
+                    bytes = []
+                    for res in self.results:
+                        bytes.extend('%02X' % ord(c) for c in res)
+                        while len(bytes) >= bytes_per_line:
+                            self.shell.prnt(' '.join(bytes[0:bytes_per_line]))
+                            bytes = bytes[bytes_per_line:]
+                    if bytes:
+                        self.shell.prnt(' '.join(bytes))
+                else:
+                    for res in self.results:
+                        self.shell.prnt(res, newline=False)
+                    if self.newline:
+                        self.shell.prnt('')
+
+    def run(self):
+        self.results = []
+        self.datastore.read_bytes(ds_basic.ALL, progresscb=self.on_progress)
 
 class Shell(object):
     easteregg_strings = {
@@ -103,8 +149,11 @@ To see a list of all commands and help topics, type "help topics\""""
             os.chdir(buf.value)
         self.jobs = {}
 
-    def prnt(self, string):
-        print string
+    def prnt(self, string, newline=True):
+        if newline:
+            print string
+        else:
+            print string,
 
     def readline(self, prompt):
         try:
@@ -139,7 +188,7 @@ To see a list of all commands and help topics, type "help topics\""""
                 cmd = self.readline(self.prompt())
                 args = self.split(cmd)
 
-                if cmd[0] != 'quit':
+                if args[0] != 'quit':
                     self.threadpool.refresh()
 
                 if args:
@@ -220,17 +269,7 @@ Print the id of the object you're currently working with."""
     def bytes_to_dsid(self, b):
         return ds_basic.bytes_to_dsid(b, self.cwd.dsid)
 
-    def cmd_ls(self, argv):
-        """usage: ls [path]
-
-List the objects contained by the current object, or a given path."""
-        if len(argv) == 0:
-            dsid = self.cwd.dsid
-        else:
-            dsid = self.bytes_to_dsid(argv[0])
-
-        job = ShellListJob(self, dsid)
-
+    def do_job(self, job):
         self.threadpool.queue_job(job)
 
         try:
@@ -246,6 +285,19 @@ List the objects contained by the current object, or a given path."""
                 job.background = True
                 self.jobs[i] = job
                 self.prnt('Running job %i: %s in the background; use "cancel %i" to stop' % (i, job.description, i))
+
+    def cmd_ls(self, argv):
+        """usage: ls [path]
+
+List the objects contained by the current object, or a given path."""
+        if len(argv) == 0:
+            dsid = self.cwd.dsid
+        else:
+            dsid = self.bytes_to_dsid(argv[0])
+
+        job = ShellListJob(self, dsid)
+
+        self.do_job(job)
 
     def cmd_dir(self, argv):
         """usage: dir [path]
@@ -272,6 +324,45 @@ Change the current working object to the given path."""
         except:
             new_cwd.release('<current object>')
             raise
+
+    def cmd_read(self, argv):
+        """usage: read [-hn] [path]
+
+Read bytes from an object. If no path is specified, use the current working
+object.
+
+If the -h switch is specified, print the data in hex format.
+
+If the -n switch is specified, do not print a newline after the data.
+
+For most objects with data, you can specify a slice as the path, to read only
+some data. For example, "read 3..." will read all the data in a file starting
+from the fourth byte, and 10..12 will read two bytes of data starting from the
+10th byte."""
+        hex_format = False
+        newline = True
+        if argv and argv[0].startswith('-'):
+            switches = set(argv.pop(0))
+            switches.remove('-')
+            if 'h' in switches:
+                hex_format = True
+                switches.remove('h')
+            if 'n' in switches:
+                newline = False
+                switches.remove('n')
+            if switches:
+                self.prnt('read: unrecognized switches %s' % ''.join(switches))
+                return
+
+        if len(argv) == 0:
+            dsid = self.cwd.dsid
+        else:
+            dsid = self.bytes_to_dsid(argv[0])
+
+        job = ShellReadJob(self, dsid, hex_format, newline)
+
+        self.do_job(job)
+
 
 def main(argv):
     s = Shell()

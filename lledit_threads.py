@@ -3,6 +3,7 @@ import sys
 import thread
 import threading
 import time
+import traceback
 
 if sys.platform == 'cli':
     import math
@@ -152,7 +153,10 @@ class ThreadPool(object):
         for i in range(len(self.jobs)-1, -1, -1):
             job = self.jobs[i]
             if job.finished:
-                job.cb(job)
+                try:
+                    job.cb(job)
+                except BaseException:
+                    traceback.print_exc()
                 self.jobs.pop(i)
 
     def queue_job(self, job):

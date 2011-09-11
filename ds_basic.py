@@ -221,7 +221,7 @@ class Slice(DataStore):
             if self.range.end is not END:
                 end = min(self.range.end, end)
         else:
-            end = r.end
+            end = self.range.end
 
         return CharacterRange(start, end)
 
@@ -356,11 +356,11 @@ class FileSystemObject(DataStore):
                 if r.end == END:
                     bytestoread = 4096
                 else:
-                    bytestoread = max(4096, r.end - offset)
+                    bytestoread = min(4096, r.end - offset)
                 last_res = os.read(self.fd, bytestoread)
                 if last_res:
                     offset += len(last_res)
-                    if not progresscb(offset - r.start, expected_end - offset, last_res):
+                    if not progresscb(offset - r.start, expected_end - r.start, last_res):
                         result.append(last_res)
 
         return ''.join(result)
