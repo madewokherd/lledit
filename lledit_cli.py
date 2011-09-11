@@ -189,10 +189,10 @@ To see a list of all commands and help topics, type "help topics\""""
                 cmd = self.readline(self.prompt())
                 args = self.split(cmd)
 
-                if args[0] != 'quit':
-                    self.threadpool.refresh()
-
                 if args:
+                    if args[0] != 'quit':
+                        self.threadpool.refresh()
+
                     try:
                         func = getattr(self, 'cmd_' + args[0])
                     except AttributeError:

@@ -3,18 +3,13 @@ import struct
 
 import ds_basic
 
-class Png(ds_basic.DataStore):
-    __start_magic__ = '\x89PNG\r\n\x1a\n'
-
-    def __init__(self, session, referrer, dsid):
-        ds_basic.DataStore.__init__(self, session, referrer, dsid)
-
-        self.parent = self.get_datastore(dsid[0:-1])
+class Png(ds_basic.Data):
+    __start_magics__ = ('\x89PNG\r\n\x1a\n',)
 
     def enum_keys(self, progresscb=ds_basic.do_nothing):
         yield 'MagicNumber'
         magic = self.parent.read_bytes(ds_basic.CharacterRange(0, 8))
-        if magic != self.__start_magic__:
+        if magic not in self.__start_magics__:
             yield ds_basic.BrokenData('Incorrect magic number %s' % repr(magic))
 
         ofs = 8
@@ -47,6 +42,20 @@ class Png(ds_basic.DataStore):
         else:
             return ds_basic.DataStore.get_child_dsid(self, key)
 
-class PngChunk(ds_basic.DataStore):
+class PngChunkCrc(ds_basic.UIntBE):
     pass
+
+class PngChunk(ds_basic.Structure):
+    def __init__(self, session, referrer, dsid):
+        ds_basic.Structure.__init__(self, session, referrer, dsid)
+
+    subfields = True
+
+    __fields__ = (
+        ('Length', ds_basic.UIntBE, 'size', 4),
+        ('Type', ds_basic.Data, 'size', 4),
+        ('RawData', ds_basic.Data, 'size_is', 'Length'),
+        ('CRC', PngChunkCrc, 'size', 4),
+        ('Next', ds_basic.Data),
+        )
 

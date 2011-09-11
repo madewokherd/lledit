@@ -51,6 +51,7 @@ class Session(object):
     def refresh_modules(self):
         datastore_types = {}
         toplevels = {}
+        start_magics = []
 
         for module in self.modules:
             for name in dir(module):
@@ -60,9 +61,14 @@ class Session(object):
                     if '__toplevels__' in obj.__dict__:
                         for key in obj.__dict__['__toplevels__']:
                             toplevels[key.lower()] = TopLevelInfo(key, name.lower())
+                    if '__start_magics__' in obj.__dict__:
+                        for magic in obj.__dict__['__start_magics__']:
+                            start_magics.append((magic, name))
 
-        self.datastore_types = datastore_types
-        self.toplevels = toplevels
+        with self.lock:
+            self.datastore_types = datastore_types
+            self.toplevels = toplevels
+            self.start_magics = start_magics
 
     def open(self, dsid, referrer):
         to_release = []
@@ -189,6 +195,9 @@ class DataStore(object):
             return None
         return self.dsid[0:-1]
 
+    def read_field_bytes(self, key, r=ALL, progresscb=do_nothing):
+        return self.read_bytes(r, progresscb)
+
 class Root(DataStore):
     def __init__(self, session, referrer, dsid):
         if dsid != ():
@@ -208,6 +217,19 @@ class Root(DataStore):
     def get_parent_dsid(self):
         return ()
 
+def translate_range(range, subrange):
+    start = subrange.start + range.start
+
+    if subrange.end is not END:
+        end = subrange.end + range.start
+
+        if range.end is not END:
+            end = min(range.end, end)
+    else:
+        end = range.end
+
+    return CharacterRange(start, end)
+
 class Slice(DataStore):
     def __init__(self, session, referrer, dsid):
         DataStore.__init__(self, session, referrer, dsid)
@@ -215,18 +237,8 @@ class Slice(DataStore):
         self.parent = self.get_datastore(dsid[0:-1])
         self.range = dsid[-1]
 
-    def translate_range(self, r):
-        start = r.start + self.range.start
-
-        if r.end is not END:
-            end = r.end + self.range.start
-
-            if self.range.end is not END:
-                end = min(self.range.end, end)
-        else:
-            end = self.range.end
-
-        return CharacterRange(start, end)
+    def translate_range(self, range):
+        return translate_range(self.range, range)
 
     def enum_keys(self):
         return CharacterRange(0, END if self.range.end is END else self.range.end - self.range.start)
@@ -239,6 +251,107 @@ class Slice(DataStore):
             return (self.parent.dsid + (self.translate_range(key),)), Slice
         else:
             return DataStore.get_child_dsid(self, key)
+
+StructFieldInfo = collections.namedtuple('StructFieldInfo', ('name', 'type', 'start', 'end'))
+
+class Data(DataStore):
+    def __init__(self, session, referrer, dsid):
+        DataStore.__init__(self, session, referrer, dsid)
+
+        self.parent = self.get_datastore(dsid[0:-1])
+
+    def enum_keys(self, progresscb=do_nothing):
+        yield ALL
+
+    def read_bytes(self, r=ALL, progresscb=do_nothing):
+        return self.parent.read_field_bytes(self.dsid[-1], r, progresscb)
+
+class UIntBE(Data):
+    @classmethod
+    def bytes_to_int(cls, data):
+        result = 0
+        for c in data:
+            result = result << 8 | ord(c)
+        return result
+
+class Structure(Data):
+    def _check_byte(self, ofs, checked_bytes):
+        if ofs in checked_bytes or ofs is END:
+            return True
+        if self.parent.read_bytes(CharacterRange(ofs, ofs + 1)):
+            checked_bytes.add(ofs)
+            return True
+        else:
+            return False
+
+    def locate_fields(self):
+        ofs = 0
+        fields = {}
+        field_data = {}
+        field_order = []
+        warnings = []
+        unallocated_ranges = [(0, END)]
+        checked_bytes = set()
+
+        for field in self.__fields__:
+            name, klass = field[0:2]
+
+            start = ofs
+            end = END
+
+            for i in range(2, len(field), 2):
+                setting, value = field[i:i+2]
+                if setting == 'size':
+                    end = start + value
+                elif setting == 'size_is':
+                    value = value.lower()
+                    ref_field = fields[value]
+                    if value not in field_data:
+                        field_data[value] = self.parent.read_bytes(CharacterRange(ref_field.start, ref_field.end))
+                    data = field_data[value]
+                    size = ref_field.type.bytes_to_int(data)
+                    end = start + size
+                else:
+                    raise TypeError("unknown structure field setting: %s" % setting)
+
+            ofs = end
+
+            if start != end:
+                if not self._check_byte(start, checked_bytes):
+                    warnings.append(BrokenData('Missing field %s' % name))
+                    continue
+                elif not self._check_byte(end, checked_bytes):
+                    warnings.append(BrokenData('Truncated field %s' % name))
+
+            fields[name.lower()] = StructFieldInfo(name, klass, start, end)
+            field_order.append(name)
+
+        return fields, warnings, field_order
+
+    def enum_keys(self, progresscb=do_nothing):
+        fields, warnings, field_order = self.locate_fields()
+
+        for field in field_order:
+            yield field
+
+    def get_child_dsid(self, key):
+        if isinstance(key, basestring):
+            key = key.lower()
+            for field in self.__fields__:
+                if key == field[0].lower():
+                    return (self.dsid + (field[0],)), field[1]
+            raise ValueError("Structure of type %s has no field %s\n" % (type(self).__name__, key))
+        else:
+            return DataStore.get_child_dsid(self, key)
+
+    def read_field_bytes(self, key, r=ALL, progresscb=do_nothing):
+        if isinstance(key, basestring):
+            fields, warnings, field_order = self.locate_fields()
+            if key.lower() in fields:
+                field = fields[key.lower()]
+                return self.read_bytes(translate_range(CharacterRange(field.start, field.end), r), progresscb)
+        else:
+            return DataStore.read_field_bytes(self, key, r, progresscb)
 
 class FileSystemObject(DataStore):
     __toplevels__ = ("FileSystem",)
