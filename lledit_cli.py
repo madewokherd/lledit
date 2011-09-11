@@ -33,7 +33,9 @@ class ShellJob(lledit_threads.Job):
             pass # FIXME
 
 class ShellListJob(ShellJob):
-    def __init__(self, shell, dsid):
+    def __init__(self, shell, dsid, longformat):
+        self.longformat = longformat
+        self.maxlen = 1
         self.datastore = shell.session.open(dsid, '<temporary>')
         try:
             self.string_dsid = ds_basic.dsid_to_bytes(self.datastore.dsid)
@@ -52,15 +54,32 @@ class ShellListJob(ShellJob):
                 print 'ls in %s failed: %s' % (self.string_dsid, self.exception)
             else:
                 self.shell.prnt("%i objects in %s:" % (len(self.results), self.string_dsid))
-                for key in self.results:
-                    self.shell.prnt(ds_basic.key_to_bytes(key))
+                for i, key in enumerate(self.results):
+                    name = ds_basic.key_to_bytes(key)
+                    if self.longformat:
+                        spacing = ' ' * (self.maxlen + 3 - len(name))
+                        description = self.descriptions[i]
+                        self.shell.prnt('%s%s%s' % (name, spacing, description))
+                    else:
+                        self.shell.prnt(name)
 
     def run(self):
         self.results = []
+        self.descriptions = []
         for key in self.datastore.enum_keys(progresscb=self.on_progress):
             if self.canceled:
                 break
             self.results.append(key)
+            if self.longformat:
+                self.maxlen = max(self.maxlen, len(ds_basic.key_to_bytes(key)))
+                item_datastore = self.datastore.open((key,), '<temporary>')
+                try:
+                    description = item_datastore.get_description()
+                except:
+                    description = 'Failure reading object'
+                finally:
+                    item_datastore.release('<temporary>')
+                self.descriptions.append(description)
 
 class ShellReadJob(ShellJob):
     def __init__(self, shell, dsid, hex_format, newline):
@@ -290,20 +309,32 @@ Print the id of the object you're currently working with."""
     def cmd_ls(self, argv):
         """usage: ls [path]
 
-List the objects contained by the current object, or a given path."""
+List the objects contained by the current object, or a given path.
+
+If -l is specified, print more information about the objects listed (this may
+involve reading them)."""
+        longformat = False
+
+        if argv and argv[0] == '-l':
+            argv = argv[1:]
+            longformat = True
+
         if len(argv) == 0:
             dsid = self.cwd.dsid
         else:
             dsid = self.bytes_to_dsid(argv[0])
 
-        job = ShellListJob(self, dsid)
+        job = ShellListJob(self, dsid, longformat)
 
         self.do_job(job)
 
     def cmd_dir(self, argv):
-        """usage: dir [path]
+        """usage: dir [-l] [path]
 
-List the objects contained by the current object, or a given path."""
+List the objects contained by the current object, or a given path.
+
+If -l is specified, print more information about the objects listed (this may
+involve reading them)."""
         return self.cmd_ls(argv)
 
     def cmd_cd(self, argv):

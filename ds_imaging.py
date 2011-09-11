@@ -59,3 +59,10 @@ class PngChunk(ds_basic.Structure):
         ('Next', ds_basic.Data),
         )
 
+    def get_description(self):
+        length = self.read_field_bytes("Length")
+        type = self.read_field_bytes("Type")
+        if len(type) != 4:
+            return "invalid PNG chunk"
+        return "%s chunk of size %i" % (type, ds_basic.UIntBE.bytes_to_int(length))
+

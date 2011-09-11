@@ -198,6 +198,18 @@ class DataStore(object):
     def read_field_bytes(self, key, r=ALL, progresscb=do_nothing):
         return self.read_bytes(r, progresscb)
 
+    def read_bytes(self, r=ALL, progresscb=do_nothing):
+        raise TypeError
+
+    def get_description(self):
+        try:
+            bytes = self.read_bytes(CharacterRange(0, 21))
+            if len(bytes) == 21:
+                bytes = bytes[0:20] + '...'
+            return repr(bytes)
+        except:
+            return type(self).__name__
+
 class Root(DataStore):
     def __init__(self, session, referrer, dsid):
         if dsid != ():
@@ -252,6 +264,14 @@ class Slice(DataStore):
         else:
             return DataStore.get_child_dsid(self, key)
 
+    def get_description(self):
+        result = 'stream data'
+        if self.range.start != 0:
+            result += ' starting at byte %s' % self.range.start
+        if self.range.end is not END:
+            result += ' ending at byte %s' % self.range.end
+        return result
+
 StructFieldInfo = collections.namedtuple('StructFieldInfo', ('name', 'type', 'start', 'end'))
 
 class Data(DataStore):
@@ -273,6 +293,9 @@ class UIntBE(Data):
         for c in data:
             result = result << 8 | ord(c)
         return result
+
+    def get_description(self):
+        return str(self.bytes_to_int(self.read_bytes()))
 
 class Structure(Data):
     def _check_byte(self, ofs, checked_bytes):
@@ -352,6 +375,9 @@ class Structure(Data):
                 return self.read_bytes(translate_range(CharacterRange(field.start, field.end), r), progresscb)
         else:
             return DataStore.read_field_bytes(self, key, r, progresscb)
+
+class FileSystemStat(DataStore):
+    pass #TODO
 
 class FileSystemObject(DataStore):
     __toplevels__ = ("FileSystem",)
@@ -444,6 +470,8 @@ class FileSystemObject(DataStore):
                 return ('FileSystem',), FileSystemObject
             else:
                 return ('FileSystem', key), FileSystemObject
+        elif key is STAT and self.path is not None:
+            return (self.dsid + (STAT,)), FileSystemStat
         else:
             return DataStore.get_child_dsid(self, key)
 
