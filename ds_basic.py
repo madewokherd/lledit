@@ -679,8 +679,10 @@ def bytes_to_dsid(b, base, session):
                 result.append(int(piece))
         elif piece[0] == '?':
             result.append(session.datastore_types[piece[1:].lower()].type)
+        elif at_start and piece == '~':
+            result = ['FileSystem', os.path.expanduser('~')]
         elif at_start and piece in session.aliases:
-            result = aliases[piece].dsid
+            result = list(aliases[piece].dsid)
         else:
             result.append(piece)
         at_start = False
