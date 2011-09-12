@@ -44,7 +44,7 @@ class Session(object):
         self.open_datastores = {}
         self.lock = threading.RLock()
         self.root = self.open_datastores[()] = Root(self, '<root>', ())
-        self.modules = [__import__('ds_basic'), __import__('ds_imaging')]
+        self.modules = [__import__('ds_basic'), __import__('ds_png')]
         self.refresh_modules()
         self.aliases = {}
 
