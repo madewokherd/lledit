@@ -228,7 +228,7 @@ class Root(DataStore):
         DataStore.__init__(self, session, referrer, dsid)
 
     def enum_keys(self, progresscb=do_nothing):
-        for toplevel in self.session.toplevels:
+        for toplevel in self.session.toplevels.values():
             yield toplevel.key
 
     def get_child_dsid(self, key):
