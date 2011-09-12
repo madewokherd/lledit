@@ -234,6 +234,8 @@ class Root(DataStore):
     def get_child_dsid(self, key):
         if isinstance(key, basestring) and key.lower() in self.session.toplevels:
             return (self.session.toplevels[key.lower()].key,), self.session.datastore_types[self.session.toplevels[key.lower()].typename].type
+        elif isinstance(key, basestring):
+            return ("FileSystem", key), None
         else:
             return DataStore.get_child_dsid(self, key)
 
