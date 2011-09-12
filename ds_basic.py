@@ -221,6 +221,9 @@ class DataStore(object):
         except:
             return type(self).__name__
 
+    def get_size(self):
+        raise TypeError
+
 class Root(DataStore):
     def __init__(self, session, referrer, dsid):
         if dsid != ():
@@ -285,19 +288,86 @@ class Slice(DataStore):
             result += ' ending at byte %s' % self.range.end
         return result
 
-StructFieldInfo = collections.namedtuple('StructFieldInfo', ('name', 'type', 'start', 'end'))
+DataFieldInfo = collections.namedtuple('DataFieldInfo', ('name', 'type', 'start', 'end'))
 
 class Data(DataStore):
+    __fields__ = ()
+
     def __init__(self, session, referrer, dsid):
         DataStore.__init__(self, session, referrer, dsid)
 
         self.parent = self.get_datastore(dsid[0:-1])
 
-    def enum_keys(self, progresscb=do_nothing):
-        yield ALL
-
     def read_bytes(self, r=ALL, progresscb=do_nothing):
         return self.parent.read_field_bytes(self.dsid[-1], r, progresscb)
+
+    def get_child_dsid(self, key):
+        if isinstance(key, basestring):
+            key = key.lower()
+            for field in self.__fields__:
+                if key == field[0].lower():
+                    return (self.dsid + (field[0],)), field[1]
+            raise ValueError("Structure of type %s has no field %s\n" % (type(self).__name__, key))
+        else:
+            return DataStore.get_child_dsid(self, key)
+
+    def locate_fields(self):
+        return {}, [], []
+
+    def enum_keys(self, progresscb=do_nothing):
+        fields, warnings, field_order = self.locate_fields()
+
+        size = self.get_size()
+        if size:
+            unused_ranges = [CharacterRange(0, size)]
+        else:
+            unused_ranges = ()
+
+        for field in field_order:
+            yield field
+            field = fields[field.lower()]
+            if field.type:
+                i = 0
+                while i < len(unused_ranges):
+                    if field.end is not END and field.end < unused_ranges[i].start:
+                        i = i + 1
+                    elif unused_ranges[i].end is not END and field.start > unused_ranges[i].end:
+                        break
+                    elif field.start <= unused_ranges[i].start and (field.end is END or 
+                        (unused_ranges[i].end is not END and field.end >= unused_ranges[i].end)):
+                        unused_ranges.pop(i)
+                    elif field.start <= unused_ranges[i].start:
+                        unused_ranges[i] = CharacterRange(field.end+1, unused_ranges[i].end)
+                        break
+                    elif field.end is END or (unused_ranges[i].end is not END and field.end > unused_ranges[i].end):
+                        unused_ranges[i] = CharacterRange(unused_ranges[i].start, field.start-1)
+                        i = i + 1
+                    else:
+                        unused_ranges.insert(i+1, CharacterRange(field.end + 1, unused_ranges[i].start))
+                        unused_ranges[i] = CharacterRange(unused_ranges[i].start, field.start-1)
+                        break
+
+        for r in unused_ranges:
+            yield r
+
+    def locate_field(self, key):
+        if isinstance(key, basestring):
+            fields, warnings, field_order = self.locate_fields()
+            if key.lower() in fields:
+                field = fields[key.lower()]
+                return CharacterRange(field.start, field.end)
+            raise ValueError("Structure of type %s has no field %s\n" % (type(self).__name__, key))
+        return DataStore.locate_field(self, key)
+
+    def get_size(self):
+        try:
+            r = self.parent.locate_field(self.dsid[-1])
+            if r.end == END:
+                return END
+            else:
+                return r.end - r.start
+        except:
+            return END
 
 class UIntBE(Data):
     @classmethod
@@ -415,37 +485,10 @@ class Structure(Data):
                 elif end is not END and not self._check_byte(end-1, checked_bytes):
                     warnings.append(BrokenData('Truncated field %s' % name))
 
-            fields[name.lower()] = StructFieldInfo(name, klass, start, end)
+            fields[name.lower()] = DataFieldInfo(name, klass, start, end)
             field_order.append(name)
 
         return fields, warnings, field_order
-
-    def enum_keys(self, progresscb=do_nothing):
-        fields, warnings, field_order = self.locate_fields()
-
-        for field in field_order:
-            yield field
-        for warning in warnings:
-            yield warning
-
-    def get_child_dsid(self, key):
-        if isinstance(key, basestring):
-            key = key.lower()
-            for field in self.__fields__:
-                if key == field[0].lower():
-                    return (self.dsid + (field[0],)), field[1]
-            raise ValueError("Structure of type %s has no field %s\n" % (type(self).__name__, key))
-        else:
-            return DataStore.get_child_dsid(self, key)
-
-    def locate_field(self, key):
-        if isinstance(key, basestring):
-            fields, warnings, field_order = self.locate_fields()
-            if key.lower() in fields:
-                field = fields[key.lower()]
-                return CharacterRange(field.start, field.end)
-            raise ValueError("Structure of type %s has no field %s\n" % (type(self).__name__, key))
-        return DataStore.locate_field(self, key)
 
 class FileSystemStat(DataStore):
     pass #TODO
@@ -596,6 +639,14 @@ class FileSystemObject(DataStore):
         if self.fd is not None:
             os.close(self.fd)
         DataStore.do_free(self)
+
+    def get_size(self):
+        with self.lock:
+            fd, st = self.get_fd()
+            if fd is None:
+                raise IOError("Not a regular file")
+
+            return st.st_size
 
 def key_to_unicode(key):
     if isinstance(key, bytes):
