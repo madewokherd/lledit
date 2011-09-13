@@ -199,3 +199,6 @@ class PngChunk(ds_basic.Structure):
             return "invalid PNG chunk"
         return "%s chunk of size %i" % (type, ds_basic.UIntBE.bytes_to_int(length))
 
+class PngChunks(ds_basic.HeteroArray):
+    __base_type__ = PngChunk
+

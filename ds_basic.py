@@ -372,6 +372,7 @@ class Data(DataStore):
 
         for field in fields:
             field = fields[field.lower()]
+
             if field.type:
                 if field.end == END:
                     return END
@@ -440,6 +441,61 @@ class Enumeration(Data):
         return Data.get_description(self)
 
     __values__ = ()
+
+class HeteroArray(Data):
+    __base_type__ = None
+
+    def __init__(self, session, referrer, dsid):
+        if self.__base_type__ is None:
+            raise TypeError("HeteroArray must have __base_type__ set")
+
+        Data.__init__(self, session, referrer, dsid)
+
+    def is_last_item(self, datastore):
+        return False
+
+    def get_ranges(self, stop=-1):
+        ofs = 0
+        result = []
+        last = False
+
+        while len(result) != stop and not last:
+            if not self.read_bytes(CharacterRange(ofs, ofs+1)):
+                break
+
+            temp_item = self.open((CharacterRange(ofs, END), self.__base_type__), '<temporary>')
+            try:
+                size = temp_item.locate_end()
+                last = self.is_last_item(temp_item)
+            finally:
+                temp_item.release('<temporary>')
+
+            if size is END:
+                result.append(CharacterRange(ofs, END))
+                break
+            else:
+                result.append(CharacterRange(ofs, ofs+size))
+
+            ofs += size
+
+        return result
+
+    def enum_keys(self, progresscb=do_nothing):
+        return xrange(len(self.get_ranges()))
+
+    def locate_field(self, key):
+        if isinstance(key, int):
+            ranges = self.get_ranges(key+1)
+            if len(ranges) == key+1:
+                return ranges[-1]
+            else:
+                return CharacterRange(0, 0)
+        return Data.locate_field(self, key)
+
+    def get_child_dsid(self, key):
+        if isinstance(key, int):
+            return (self.dsid + (key,)), self.__base_type__
+        return Data.get_child_dsid(self, key)
 
 class Structure(Data):
     def _check_byte(self, ofs, checked_bytes):
