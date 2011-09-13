@@ -451,45 +451,53 @@ class HeteroArray(Data):
 
         Data.__init__(self, session, referrer, dsid)
 
+        self.ranges = []
+        self.ofs = 0
+        self.lock = threading.RLock()
+
     def is_last_item(self, datastore):
         return False
 
-    def get_ranges(self, stop=-1):
-        ofs = 0
-        result = []
+    def do_get_ranges(self, stop=None):
         last = False
 
-        while len(result) != stop and not last:
-            if not self.read_bytes(CharacterRange(ofs, ofs+1)):
-                break
+        with self.lock:
+            while (stop is None or len(self.ranges) > stop) and not last:
+                # FIXME: Figure out when to throw away the cache.
 
-            temp_item = self.open((CharacterRange(ofs, END), self.__base_type__), '<temporary>')
-            try:
-                size = temp_item.locate_end()
-                last = self.is_last_item(temp_item)
-            finally:
-                temp_item.release('<temporary>')
+                if not self.read_bytes(CharacterRange(self.ofs, self.ofs+1)):
+                    break
 
-            if size is END:
-                result.append(CharacterRange(ofs, END))
-                break
-            else:
-                result.append(CharacterRange(ofs, ofs+size))
+                temp_item = self.open((CharacterRange(self.ofs, END), self.__base_type__), '<temporary>')
+                try:
+                    size = temp_item.locate_end()
+                    last = self.is_last_item(temp_item)
+                finally:
+                    temp_item.release('<temporary>')
 
-            ofs += size
+                if size is END:
+                    self.ranges.append(CharacterRange(self.ofs, END))
+                    self.ofs = END
+                    break
+                else:
+                    self.ranges.append(CharacterRange(self.ofs, self.ofs+size))
+                    self.ofs += size
 
-        return result
+    def get_range(self, n):
+        with self.lock:
+            self.do_get_ranges(n)
+            if n >= len(self.ranges):
+                return CharacterRange(0,0)
+            return self.ranges[n]
 
     def enum_keys(self, progresscb=do_nothing):
-        return xrange(len(self.get_ranges()))
+        with self.lock:
+            self.do_get_ranges(None)
+            return xrange(len(self.ranges))
 
     def locate_field(self, key):
         if isinstance(key, int):
-            ranges = self.get_ranges(key+1)
-            if len(ranges) == key+1:
-                return ranges[-1]
-            else:
-                return CharacterRange(0, 0)
+            return self.get_range(key)
         return Data.locate_field(self, key)
 
     def get_child_dsid(self, key):

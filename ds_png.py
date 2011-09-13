@@ -202,3 +202,6 @@ class PngChunk(ds_basic.Structure):
 class PngChunks(ds_basic.HeteroArray):
     __base_type__ = PngChunk
 
+    def is_last_item(self, item):
+        return item.read_field_bytes("Type") == 'IEND'
+
