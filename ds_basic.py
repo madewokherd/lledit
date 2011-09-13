@@ -288,7 +288,13 @@ class Slice(DataStore):
             result += ' ending at byte %s' % self.range.end
         return result
 
-DataFieldInfo = collections.namedtuple('DataFieldInfo', ('name', 'type', 'start', 'end'))
+    def get_size(self):
+        if self.range.end is END:
+            return END
+        else:
+            return self.range.end - self.range.start
+
+DataFieldInfo = collections.namedtuple('DataFieldInfo', ('name', 'path', 'type', 'start', 'end'))
 
 class Data(DataStore):
     __fields__ = ()
@@ -359,6 +365,24 @@ class Data(DataStore):
             raise ValueError("Structure of type %s has no field %s\n" % (type(self).__name__, key))
         return DataStore.locate_field(self, key)
 
+    def locate_end(self):
+        fields, warnings, field_order = self.locate_fields()
+
+        end = -1
+
+        for field in fields:
+            field = fields[field.lower()]
+            if field.type:
+                if field.end == END:
+                    return END
+                elif field.end > end:
+                    end = field.end
+
+        if end == -1:
+            return END
+
+        return end
+
     def get_size(self):
         try:
             r = self.parent.locate_field(self.dsid[-1])
@@ -388,6 +412,17 @@ class CString(Data):
         else:
             bytes = sample_string(bytes, 20) + ' (missing NULL terminator)'
         return bytes
+
+    def locate_end(self):
+        ofs = 0
+
+        while True:
+            data = self.read_bytes(CharacterRange(ofs, ofs+4096))
+            if '\0' in data:
+                return data.index('\0') + ofs + 1
+            elif len(data) < 4096:
+                return len(data) + ofs
+            ofs += 4096
 
 class Boolean(UIntBE):
     def get_description(self):
@@ -429,7 +464,7 @@ class Structure(Data):
             name, klass = field[0:2]
 
             start = ofs
-            end = END
+            end = None
             optional = False
             skip = False
 
@@ -475,6 +510,17 @@ class Structure(Data):
             if skip:
                 continue
 
+            if end is None:
+                temp_field = self.open((CharacterRange(start, END), klass), '<temporary>')
+                try:
+                    end = temp_field.locate_end()
+                    if end is not END:
+                        end += start
+                except:
+                    end = END
+                finally:
+                    temp_field.release('<temporary>')
+
             ofs = end
 
             if start != end:
@@ -485,7 +531,7 @@ class Structure(Data):
                 elif end is not END and not self._check_byte(end-1, checked_bytes):
                     warnings.append(BrokenData('Truncated field %s' % name))
 
-            fields[name.lower()] = DataFieldInfo(name, klass, start, end)
+            fields[name.lower()] = DataFieldInfo(name, None, klass, start, end)
             field_order.append(name)
 
         return fields, warnings, field_order
@@ -569,7 +615,7 @@ class FileSystemObject(DataStore):
                     entry = entry.encode('utf8')
                 yield entry
         elif stat.S_ISREG(st.st_mode):
-            yield ALL
+            yield CharacterRange(0, st.st_size)
             # FIXME: Chain to magic number checking code
         else:
             raise NotImplementedError("not implemented for file type %x" % stat.S_IFMT(st.st_mode))

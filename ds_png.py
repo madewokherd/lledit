@@ -119,7 +119,7 @@ class PngRenderingIntent(ds_basic.Enumeration):
 
 class PngIccProfile(ds_basic.Structure):
     __fields__ = (
-        ('ProfileName', ds_basic.CString, 'size', 80, 'stopatnul', True),
+        ('ProfileName', ds_basic.CString),
         ('CompressionMethod', PngCompressionMethod, 'size', 1),
         ('CompressedProfile', ds_basic.Data),
         )
@@ -127,13 +127,13 @@ class PngIccProfile(ds_basic.Structure):
 
 class PngText(ds_basic.Structure):
     __fields__ = (
-        ('Keyword', ds_basic.CString, 'size', 80, 'stopatnul', True),
+        ('Keyword', ds_basic.CString),
         ('Text', ds_basic.Data),
         )
 
 class PngTextZ(ds_basic.Structure):
     __fields__ = (
-        ('Keyword', ds_basic.CString, 'size', 80, 'stopatnul', True),
+        ('Keyword', ds_basic.CString),
         ('CompressionMethod', PngCompressionMethod, 'size', 1),
         ('CompressedText', ds_basic.Data),
         )
@@ -141,11 +141,11 @@ class PngTextZ(ds_basic.Structure):
 
 class PngTextI(ds_basic.Structure):
     __fields__ = (
-        ('Keyword', ds_basic.CString, 'size', 80, 'stopatnul', True),
+        ('Keyword', ds_basic.CString),
         ('CompressionFlag', ds_basic.Boolean, 'size', 1),
         ('CompressionMethod', PngCompressionMethod, 'size', 1),
-        ('LanguageTag', ds_basic.CString, 'stopatnul', True),
-        ('TranslatedKeyword', ds_basic.CString, 'stopatnul', True),
+        ('LanguageTag', ds_basic.CString),
+        ('TranslatedKeyword', ds_basic.CString),
         ('RawText', ds_basic.Data),
         )
     # FIXME: Test this and make it possible to uncompress the data
