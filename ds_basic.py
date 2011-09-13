@@ -209,6 +209,11 @@ class DataStore(object):
         return self.read_bytes(translate_range(field_range, r), progresscb)
 
     def locate_field(self, key):
+        if isinstance(key, type) and issubclass(key, DataStore):
+            try:
+                return CharacterRange(0, self.get_size())
+            except TypeError:
+                pass
         raise TypeError
 
     def read_bytes(self, r=ALL, progresscb=do_nothing):
@@ -280,14 +285,6 @@ class Slice(DataStore):
         else:
             return DataStore.get_child_dsid(self, key)
 
-    def get_description(self):
-        result = 'stream data'
-        if self.range.start != 0:
-            result += ' starting at byte %s' % self.range.start
-        if self.range.end is not END:
-            result += ' ending at byte %s' % self.range.end
-        return result
-
     def get_size(self):
         if self.range.end is END:
             return END
@@ -335,22 +332,22 @@ class Data(DataStore):
             if field.type:
                 i = 0
                 while i < len(unused_ranges):
-                    if field.end is not END and field.end < unused_ranges[i].start:
+                    if field.end is not END and field.end <= unused_ranges[i].start:
                         i = i + 1
-                    elif unused_ranges[i].end is not END and field.start > unused_ranges[i].end:
+                    elif unused_ranges[i].end is not END and field.start >= unused_ranges[i].end:
                         break
                     elif field.start <= unused_ranges[i].start and (field.end is END or 
                         (unused_ranges[i].end is not END and field.end >= unused_ranges[i].end)):
                         unused_ranges.pop(i)
                     elif field.start <= unused_ranges[i].start:
-                        unused_ranges[i] = CharacterRange(field.end+1, unused_ranges[i].end)
+                        unused_ranges[i] = CharacterRange(field.end, unused_ranges[i].end)
                         break
-                    elif field.end is END or (unused_ranges[i].end is not END and field.end > unused_ranges[i].end):
-                        unused_ranges[i] = CharacterRange(unused_ranges[i].start, field.start-1)
+                    elif field.end is END or (unused_ranges[i].end is not END and field.end >= unused_ranges[i].end):
+                        unused_ranges[i] = CharacterRange(unused_ranges[i].start, field.start)
                         i = i + 1
                     else:
-                        unused_ranges.insert(i+1, CharacterRange(field.end + 1, unused_ranges[i].start))
-                        unused_ranges[i] = CharacterRange(unused_ranges[i].start, field.start-1)
+                        unused_ranges.insert(i+1, CharacterRange(field.end, unused_ranges[i].start))
+                        unused_ranges[i] = CharacterRange(unused_ranges[i].start, field.start)
                         break
 
         for r in unused_ranges:
@@ -462,7 +459,7 @@ class HeteroArray(Data):
         last = False
 
         with self.lock:
-            while (stop is None or len(self.ranges) > stop) and not last:
+            while (stop is None or len(self.ranges) <= stop) and self.ofs is not END and not last:
                 # FIXME: Figure out when to throw away the cache.
 
                 if not self.read_bytes(CharacterRange(self.ofs, self.ofs+1)):
@@ -471,6 +468,8 @@ class HeteroArray(Data):
                 temp_item = self.open((CharacterRange(self.ofs, END), self.__base_type__), '<temporary>')
                 try:
                     size = temp_item.locate_end()
+                    if size == 0:
+                        break
                     last = self.is_last_item(temp_item)
                 finally:
                     temp_item.release('<temporary>')
@@ -478,14 +477,13 @@ class HeteroArray(Data):
                 if size is END:
                     self.ranges.append(CharacterRange(self.ofs, END))
                     self.ofs = END
-                    break
                 else:
                     self.ranges.append(CharacterRange(self.ofs, self.ofs+size))
                     self.ofs += size
 
     def get_range(self, n):
         with self.lock:
-            self.do_get_ranges(n)
+            self.do_get_ranges(n+1)
             if n >= len(self.ranges):
                 return CharacterRange(0,0)
             return self.ranges[n]
@@ -505,7 +503,18 @@ class HeteroArray(Data):
             return (self.dsid + (key,)), self.__base_type__
         return Data.get_child_dsid(self, key)
 
+    def locate_end(self):
+        with self.lock:
+            self.do_get_ranges(None)
+            return self.ofs
+
 class Structure(Data):
+    def __init__(self, *args):
+        Data.__init__(self, *args)
+
+        self.fields = None
+        self.lock = threading.RLock()
+
     def _check_byte(self, ofs, checked_bytes):
         if ofs in checked_bytes or ofs is END:
             return True
@@ -517,88 +526,102 @@ class Structure(Data):
 
     def locate_fields(self):
         ofs = 0
-        fields = {}
-        field_data = {}
-        field_order = []
-        warnings = []
-        unallocated_ranges = [(0, END)]
         checked_bytes = set()
 
-        for field in self.__fields__:
-            name, klass = field[0:2]
+        with self.lock:
+            if self.fields is not None:
+                # FIXME: figure out when to recheck this stuff
+                return self.fields, self.warnings, self.field_order
 
-            start = ofs
-            end = None
-            optional = False
-            skip = False
+            self.fields = {}
+            self.warnings = []
+            self.field_order = []
+            self.field_data = {}
 
-            for i in range(2, len(field), 2):
-                setting, value = field[i:i+2]
-                if setting == 'size':
-                    end = start + value
-                elif setting == 'size_is':
-                    value = value.lower()
-                    ref_field = fields[value]
-                    if value not in field_data:
-                        field_data[value] = self.read_bytes(CharacterRange(ref_field.start, ref_field.end))
-                    data = field_data[value]
-                    size = ref_field.type.bytes_to_int(data)
-                    end = start + size
-                elif setting == 'optional':
-                    optional = True
-                elif setting == 'ifequal':
-                    value, expected_data = value
-                    value = value.lower()
-                    ref_field = fields[value]
-                    if value not in field_data:
-                        field_data[value] = self.read_bytes(CharacterRange(ref_field.start, ref_field.end))
-                    data = field_data[value]
-                    if data != expected_data:
-                        skip = True
-                        break
-                elif setting == 'starts_with':
-                    value = value.lower()
-                    ref_field = fields[value]
-                    start = ref_field.start
-                elif setting == 'ends_with':
-                    value = value.lower()
-                    ref_field = fields[value]
-                    end = ref_field.end
-                elif setting == 'stopatnul':
-                    data = self.read_bytes(CharacterRange(start, end))
-                    if '\0' in data:
-                        end = data.index('\0') + start + 1
-                else:
-                    raise TypeError("unknown structure field setting: %s" % setting)
+            for field in self.__fields__:
+                name, klass = field[0:2]
 
-            if skip:
-                continue
+                start = ofs
+                end = None
+                optional = False
+                skip = False
 
-            if end is None:
-                temp_field = self.open((CharacterRange(start, END), klass), '<temporary>')
-                try:
-                    end = temp_field.locate_end()
-                    if end is not END:
-                        end += start
-                except:
-                    end = END
-                finally:
-                    temp_field.release('<temporary>')
+                for i in range(2, len(field), 2):
+                    setting, value = field[i:i+2]
+                    if setting == 'size':
+                        end = start + value
+                    elif setting == 'size_is':
+                        value = value.lower()
+                        if value not in self.fields:
+                            skip = True
+                            break
+                        ref_field = self.fields[value]
+                        if value not in self.field_data:
+                            self.field_data[value] = self.read_bytes(CharacterRange(ref_field.start, ref_field.end))
+                        data = self.field_data[value]
+                        size = ref_field.type.bytes_to_int(data)
+                        end = start + size
+                    elif setting == 'optional':
+                        optional = True
+                    elif setting == 'ifequal':
+                        value, expected_data = value
+                        value = value.lower()
+                        if value not in self.fields:
+                            skip = True
+                            break
+                        ref_field = self.fields[value]
+                        if value not in self.field_data:
+                            self.field_data[value] = self.read_bytes(CharacterRange(ref_field.start, ref_field.end))
+                        data = self.field_data[value]
+                        if data != expected_data:
+                            skip = True
+                            break
+                    elif setting == 'starts_with':
+                        value = value.lower()
+                        if value not in self.fields:
+                            skip = True
+                            break
+                        ref_field = self.fields[value]
+                        start = ref_field.start
+                    elif setting == 'ends_with':
+                        value = value.lower()
+                        if value not in self.fields:
+                            skip = True
+                            break
+                        ref_field = self.fields[value]
+                        end = ref_field.end
+                    else:
+                        raise TypeError("unknown structure field setting: %s" % setting)
 
-            ofs = end
-
-            if start != end:
-                if not self._check_byte(start, checked_bytes):
-                    if not optional:
-                        warnings.append(BrokenData('Missing field %s' % name))
+                if skip:
                     continue
-                elif end is not END and not self._check_byte(end-1, checked_bytes):
-                    warnings.append(BrokenData('Truncated field %s' % name))
 
-            fields[name.lower()] = DataFieldInfo(name, None, klass, start, end)
-            field_order.append(name)
+                if end is None:
+                    temp_field = self.open((CharacterRange(start, END), klass), '<temporary>')
+                    try:
+                        end = temp_field.locate_end()
+                        if end is not END:
+                            end += start
+                    except:
+                        end = END
+                    finally:
+                        temp_field.release('<temporary>')
 
-        return fields, warnings, field_order
+                if end is not END:
+                    ofs = end
+
+                if start != end:
+                    if not self._check_byte(start, checked_bytes):
+                        if not optional:
+                            self.warnings.append(BrokenData('Missing field %s' % name))
+                        continue
+                    elif end is not END and not self._check_byte(end-1, checked_bytes):
+                        self.warnings.append(BrokenData('Truncated field %s' % name))
+
+                self.fields[name.lower()] = DataFieldInfo(name, None, klass, start, end)
+                self.field_order.append(name)
+
+            return self.fields, self.warnings, self.field_order
 
 class FileSystemStat(DataStore):
     pass #TODO
