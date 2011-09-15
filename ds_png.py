@@ -138,8 +138,8 @@ class PngChunk(ds_basic.Structure):
         )
 
     def get_description(self):
-        length = self.read_field_bytes("Length")
-        type = self.read_field_bytes("Type")
+        length = self.read_bytes(self.locate_field("Length")[-1])
+        type = self.read_bytes(self.locate_field("Type")[-1])
         if len(type) != 4:
             return "invalid PNG chunk"
         return "%s chunk of size %i" % (type, ds_basic.UIntBE.bytes_to_int(length))
@@ -148,7 +148,11 @@ class PngChunks(ds_basic.HeteroArray):
     __base_type__ = PngChunk
 
     def is_last_item(self, item):
-        return item.read_field_bytes("Type") == 'IEND'
+        type_field = item.open(('Type',), '<temporary>')
+        try:
+            return type_field.read_bytes == 'IEND'
+        finally:
+            type_field.release('<temporary>')
 
 class Png(ds_basic.Structure):
     __start_magics__ = ('\x89PNG\r\n\x1a\n',)

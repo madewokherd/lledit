@@ -201,17 +201,10 @@ class DataStore(object):
             return None
         return self.dsid[0:-1]
 
-    def read_field_bytes(self, key, r=ALL, progresscb=do_nothing):
-        try:
-            field_range = self.locate_field(key)
-        except TypeError:
-            field_range = ALL
-        return self.read_bytes(translate_range(field_range, r), progresscb)
-
     def locate_field(self, key):
         if isinstance(key, type) and issubclass(key, DataStore):
             try:
-                return CharacterRange(0, self.get_size())
+                return self.dsid + (CharacterRange(0, self.get_size()),)
             except TypeError:
                 pass
         raise TypeError
@@ -300,9 +293,10 @@ class Data(DataStore):
         DataStore.__init__(self, session, referrer, dsid)
 
         self.parent = self.get_datastore(dsid[0:-1])
+        self.rawdata = self.get_datastore(self.parent.locate_field(dsid[-1]))
 
     def read_bytes(self, r=ALL, progresscb=do_nothing):
-        return self.parent.read_field_bytes(self.dsid[-1], r, progresscb)
+        return self.rawdata.read_bytes(r, progresscb)
 
     def get_child_dsid(self, key):
         if isinstance(key, basestring):
@@ -358,7 +352,7 @@ class Data(DataStore):
             fields, warnings, field_order = self.locate_fields()
             if key.lower() in fields:
                 field = fields[key.lower()]
-                return CharacterRange(field.start, field.end)
+                return self.dsid + (CharacterRange(field.start, field.end),)
             raise ValueError("Structure of type %s has no field %s\n" % (type(self).__name__, key))
         return DataStore.locate_field(self, key)
 
@@ -382,14 +376,7 @@ class Data(DataStore):
         return end
 
     def get_size(self):
-        try:
-            r = self.parent.locate_field(self.dsid[-1])
-            if r.end == END:
-                return END
-            else:
-                return r.end - r.start
-        except:
-            return END
+        return self.rawdata.get_size()
 
 class UIntBE(Data):
     @classmethod
@@ -495,7 +482,7 @@ class HeteroArray(Data):
 
     def locate_field(self, key):
         if isinstance(key, int):
-            return self.get_range(key)
+            return self.dsid + (self.get_range(key),)
         return Data.locate_field(self, key)
 
     def get_child_dsid(self, key):
