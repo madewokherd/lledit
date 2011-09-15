@@ -132,7 +132,6 @@ class DataStore(object):
         if type(self) == DataStore:
             raise TypeError("DataStore is an abstract base class")
         self.session = session
-        self._session_lock = self.session.lock
         self.referers = [referrer]
         self.references = []
         self.dsid = dsid
@@ -141,7 +140,7 @@ class DataStore(object):
         """addref adds a referrer for this object, preventing resources
         associated with it from being released. This function should not be
         used by datastore implementations; use DataStore.get_datastore instead."""
-        with self._session_lock:
+        with self.session.lock:
             if not self.session:
                 raise ValueError("This object has been freed")
             self.referers.append(referer)
@@ -149,13 +148,12 @@ class DataStore(object):
     def release(self, referer):
         """addref removes a referrer from this object. This function should not
         be used for datastores returned by DataStore.get_datastore."""
-        with self._session_lock:
+        with self.session.lock:
             if not self.session:
                 raise ValueError("This object has been freed")
             self.referers.remove(referer)
             if not self.referers:
                 del self.session.open_datastores[self.dsid]
-                self.session = None # for breaking cycles
                 self.referers = None # just in case
         if not self.session:
             self.do_free()
@@ -167,6 +165,10 @@ class DataStore(object):
         result = self.session.open(dsid, self.dsid)
         self.references.append(result)
         return result
+
+    def release_datastore(self, datastore):
+        datastore.release(self)
+        self.references.remove(datastore)
 
     def enum_keys(self, progresscb=do_nothing):
         return iter(())
@@ -222,6 +224,19 @@ class DataStore(object):
     def get_size(self):
         raise TypeError
 
+    def on_change(self, datastore, key):
+        pass
+
+    def notify_changed(self, key):
+        with self._session_lock:
+            for referer in self.referers:
+                try:
+                    f = referer.on_change
+                except AttributeError:
+                    continue
+                else:
+                    f(self, key)
+
 class Root(DataStore):
     def __init__(self, session, referrer, dsid):
         if dsid != ():
@@ -256,6 +271,22 @@ def translate_range(range, subrange):
 
     return CharacterRange(start, end)
 
+def range_union(r, sibling_range):
+    start = max(r.start, sibling_range.start)
+
+    if r.end is END or (sibling_range.end is not END and r.end > sibling_range.end):
+        end = sibling_range.end
+    else:
+        end = r.end
+
+    if end is not END and end <= start:
+        return None
+
+    return CharacterRange(start, end)
+
+def range_offset(r, n):
+    return CharacterRange(r.start + n, END if r.end is END else r.end + n)
+
 class Slice(DataStore):
     def __init__(self, session, referrer, dsid):
         DataStore.__init__(self, session, referrer, dsid)
@@ -284,6 +315,12 @@ class Slice(DataStore):
         else:
             return self.range.end - self.range.start
 
+    def on_change(self, datastore, key):
+        if datastore == self.parent and isinstance(key, CharacterRange):
+            union = range_union(self.range, key)
+            if union is not None:
+                self.notify_change(range_offset(union, -self.range.start))
+
 DataFieldInfo = collections.namedtuple('DataFieldInfo', ('name', 'path', 'type', 'start', 'end'))
 
 class Data(DataStore):
@@ -293,10 +330,22 @@ class Data(DataStore):
         DataStore.__init__(self, session, referrer, dsid)
 
         self.parent = self.get_datastore(dsid[0:-1])
-        self.rawdata = self.get_datastore(self.parent.locate_field(dsid[-1]))
+        self.rawdata = (None, 0)
+
+    def get_rawdata(self):
+        while True:
+            rawdata, times_refreshed = self.rawdata
+            if rawdata is None:
+                field = self.parent.locate_field(self.dsid[-1])
+                with self.session.lock:
+                    rawdata, new_times_refreshed = self.rawdata
+                    if new_times_refreshed == times_refreshed:
+                        self.rawdata = (self.get_datastore(field), times_refreshed+1)
+            else:
+                return rawdata
 
     def read_bytes(self, r=ALL, progresscb=do_nothing):
-        return self.rawdata.read_bytes(r, progresscb)
+        return self.get_rawdata().read_bytes(r, progresscb)
 
     def get_child_dsid(self, key):
         if isinstance(key, basestring):
@@ -376,7 +425,18 @@ class Data(DataStore):
         return end
 
     def get_size(self):
-        return self.rawdata.get_size()
+        return self.get_rawdata().get_size()
+
+    def on_change(self, datastore, key):
+        changed_range = None
+        with self.session.lock:
+            if datastore is self.parent and key == self.dsid[-1]:
+                self.rawdata = (None, self.rawdata[1]+1)
+                changed_range = ALL
+            elif datastore is self.rawdata and isinstance(key, CharacterRange):
+                changed_range = key
+        if changed_range is not None:
+            self.notify_change(changed_range)
 
 class UIntBE(Data):
     @classmethod
@@ -390,6 +450,9 @@ class UIntBE(Data):
         return str(self.bytes_to_int(self.read_bytes()))
 
 class CString(Data):
+    def __init__(self, session, referrer, dsid):
+        DataStore.__init__(self, session, referrer, dsid)
+
     def get_description(self):
         bytes = self.read_bytes()
         if bytes.endswith('\0'):
@@ -407,6 +470,7 @@ class CString(Data):
                 return data.index('\0') + ofs + 1
             elif len(data) < 4096:
                 return len(data) + ofs
+                break
             ofs += 4096
 
 class Boolean(UIntBE):
@@ -437,7 +501,9 @@ class HeteroArray(Data):
 
         self.ranges = []
         self.ofs = 0
-        self.lock = threading.RLock()
+        self.last = False
+        self.times_refreshed = 0
+        self.invalidated_offset = None
 
     def is_last_item(self, datastore):
         return False
@@ -445,40 +511,69 @@ class HeteroArray(Data):
     def do_get_ranges(self, stop=None):
         last = False
 
-        with self.lock:
-            while (stop is None or len(self.ranges) <= stop) and self.ofs is not END and not last:
-                # FIXME: Figure out when to throw away the cache.
+        times_refreshed = -1
+        ranges = None
+        ofs = None
 
-                if not self.read_bytes(CharacterRange(self.ofs, self.ofs+1)):
+        while True:
+            with self.session.lock:
+                # if we got new data from a previous iteration, and some other loop
+                # hasn't beat us to setting it, set it now
+                if times_refreshed == self.times_refreshed:
+                    self.ranges = ranges
+                    self.ofs = ofs
+                    self.times_refreshed += 1
+                else:
+                    last = False
+                # if we have enough data to fill the request, return
+                if (stop is not None and len(self.ranges) > stop) or self.ofs is END or last:
+                    return self.ranges
+                times_refreshed = self.times_refreshed
+                ranges = self.ranges[:]
+                ofs = self.ofs
+                last = False
+
+            # read new data
+            while ((stop is None or len(ranges) <= stop) and ofs is not END and not last):
+                if ranges:
+                    temp_item = self.open((ranges[-1], self.__base_type__), '<temporary>')
+                    try:
+                        last = self.is_last_item(temp_item)
+                    finally:
+                        temp_item.release('<temporary>')
+                    if last:
+                        break
+
+                if not self.read_bytes(CharacterRange(ofs, ofs+1)):
+                    last = True
                     break
 
-                temp_item = self.open((CharacterRange(self.ofs, END), self.__base_type__), '<temporary>')
+                temp_item = self.open((CharacterRange(ofs, END), self.__base_type__), '<temporary>')
+
                 try:
                     size = temp_item.locate_end()
                     if size == 0:
+                        last = True
                         break
-                    last = self.is_last_item(temp_item)
                 finally:
                     temp_item.release('<temporary>')
 
                 if size is END:
-                    self.ranges.append(CharacterRange(self.ofs, END))
-                    self.ofs = END
+                    ranges.append(CharacterRange(ofs, END))
+                    ofs = END
                 else:
-                    self.ranges.append(CharacterRange(self.ofs, self.ofs+size))
-                    self.ofs += size
+                    ranges.append(CharacterRange(ofs, ofs+size))
+                    ofs += size
 
     def get_range(self, n):
-        with self.lock:
-            self.do_get_ranges(n+1)
-            if n >= len(self.ranges):
-                return CharacterRange(0,0)
-            return self.ranges[n]
+        ranges = self.do_get_ranges(n+1)
+        if n >= len(ranges):
+            return CharacterRange(0,0)
+        return ranges[n]
 
     def enum_keys(self, progresscb=do_nothing):
-        with self.lock:
-            self.do_get_ranges(None)
-            return xrange(len(self.ranges))
+        ranges = self.do_get_ranges(None)
+        return xrange(len(ranges))
 
     def locate_field(self, key):
         if isinstance(key, int):
@@ -491,16 +586,33 @@ class HeteroArray(Data):
         return Data.get_child_dsid(self, key)
 
     def locate_end(self):
-        with self.lock:
-            self.do_get_ranges(None)
-            return self.ofs
+        ranges = self.do_get_ranges(None)
+        if ranges:
+            return ranges[-1].end
+        else:
+            return 0
+
+    def notify_change(self, key):
+        if isinstance(key, CharacterRange):
+            with self.session.lock:
+                any_invalid_data = False
+                # delete any invalid data
+                while self.ranges and (self.ranges[-1].start >= key.start):
+                    self.ofs = self.ranges[-1].start
+                    self.ranges.pop(-1)
+                    self.notify_change(len(ranges))
+                    any_invalid_data = True
+                self.times_refreshed += 1
+
+        Data.notify_change(self, key)
+        
 
 class Structure(Data):
     def __init__(self, *args):
         Data.__init__(self, *args)
 
         self.fields = None
-        self.lock = threading.RLock()
+        self.times_refreshed = 0
 
     def _check_byte(self, ofs, checked_bytes):
         if ofs in checked_bytes or ofs is END:
@@ -514,16 +626,24 @@ class Structure(Data):
     def locate_fields(self):
         ofs = 0
         checked_bytes = set()
+        times_refreshed = -1
 
-        with self.lock:
-            if self.fields is not None:
-                # FIXME: figure out when to recheck this stuff
-                return self.fields, self.warnings, self.field_order
+        while True:
+            with self.session.lock:
+                if self.times_refreshed == times_refreshed:
+                    self.fields = fields
+                    self.warnings = warnings
+                    self.field_order = field_order
+                    self.field_data = field_data
+                    self.times_refreshed += 1
+                if self.fields is not None:
+                    return self.fields, self.warnings, self.field_order
+                times_refreshed = self.times_refreshed
 
-            self.fields = {}
-            self.warnings = []
-            self.field_order = []
-            self.field_data = {}
+            fields = {}
+            warnings = []
+            field_order = []
+            field_data = {}
 
             for field in self.__fields__:
                 name, klass = field[0:2]
@@ -539,13 +659,13 @@ class Structure(Data):
                         end = start + value
                     elif setting == 'size_is':
                         value = value.lower()
-                        if value not in self.fields:
+                        if value not in fields:
                             skip = True
                             break
-                        ref_field = self.fields[value]
-                        if value not in self.field_data:
-                            self.field_data[value] = self.read_bytes(CharacterRange(ref_field.start, ref_field.end))
-                        data = self.field_data[value]
+                        ref_field = fields[value]
+                        if value not in field_data:
+                            field_data[value] = self.read_bytes(CharacterRange(ref_field.start, ref_field.end))
+                        data = field_data[value]
                         size = ref_field.type.bytes_to_int(data)
                         end = start + size
                     elif setting == 'optional':
@@ -553,29 +673,29 @@ class Structure(Data):
                     elif setting == 'ifequal':
                         value, expected_data = value
                         value = value.lower()
-                        if value not in self.fields:
+                        if value not in fields:
                             skip = True
                             break
-                        ref_field = self.fields[value]
-                        if value not in self.field_data:
-                            self.field_data[value] = self.read_bytes(CharacterRange(ref_field.start, ref_field.end))
-                        data = self.field_data[value]
+                        ref_field = fields[value]
+                        if value not in field_data:
+                            field_data[value] = self.read_bytes(CharacterRange(ref_field.start, ref_field.end))
+                        data = field_data[value]
                         if data != expected_data:
                             skip = True
                             break
                     elif setting == 'starts_with':
                         value = value.lower()
-                        if value not in self.fields:
+                        if value not in fields:
                             skip = True
                             break
-                        ref_field = self.fields[value]
+                        ref_field = fields[value]
                         start = ref_field.start
                     elif setting == 'ends_with':
                         value = value.lower()
-                        if value not in self.fields:
+                        if value not in fields:
                             skip = True
                             break
-                        ref_field = self.fields[value]
+                        ref_field = fields[value]
                         end = ref_field.end
                     else:
                         raise TypeError("unknown structure field setting: %s" % setting)
@@ -600,15 +720,24 @@ class Structure(Data):
                 if start != end:
                     if not self._check_byte(start, checked_bytes):
                         if not optional:
-                            self.warnings.append(BrokenData('Missing field %s' % name))
+                            warnings.append(BrokenData('Missing field %s' % name))
                         continue
                     elif end is not END and not self._check_byte(end-1, checked_bytes):
-                        self.warnings.append(BrokenData('Truncated field %s' % name))
+                        warnings.append(BrokenData('Truncated field %s' % name))
 
-                self.fields[name.lower()] = DataFieldInfo(name, None, klass, start, end)
-                self.field_order.append(name)
+                fields[name.lower()] = DataFieldInfo(name, None, klass, start, end)
+                field_order.append(name)
 
-            return self.fields, self.warnings, self.field_order
+    def notify_change(self, key):
+        Data.notify_change(self, key)
+        if isinstance(key, CharacterRange):
+            with self.session.lock:
+                # FIXME: we could possibly be smarter about this
+                if self.fields is not None:
+                    for field in self.__fields__:
+                        self.notify_change(field[0])
+                    self.times_refreshed += 1
+                    self.fields = None
 
 class FileSystemStat(DataStore):
     pass #TODO
@@ -631,6 +760,8 @@ class FileSystemObject(DataStore):
         self.fd = None
 
     def get_fd(self, writable=False):
+        assert not self.session.lock._is_owned() # No blocking operations allowed while the session is locked
+
         while True:
             st = os.lstat(self.path)
             with self.lock:

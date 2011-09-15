@@ -150,7 +150,7 @@ class PngChunks(ds_basic.HeteroArray):
     def is_last_item(self, item):
         type_field = item.open(('Type',), '<temporary>')
         try:
-            return type_field.read_bytes == 'IEND'
+            return type_field.read_bytes() == 'IEND'
         finally:
             type_field.release('<temporary>')
 
