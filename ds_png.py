@@ -156,6 +156,9 @@ class PngChunks(ds_basic.HeteroArray):
 
 class Png(ds_basic.Structure):
     __start_magics__ = ('\x89PNG\r\n\x1a\n',)
+    __extensions__ = ('png',)
+    __mimetypes__ = ('image/png',)
+    __uti__ = ('public.png',)
 
     __fields__ = (
         ('MagicNumber', ds_basic.Data, 'size', 8),
