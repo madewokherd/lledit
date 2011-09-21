@@ -1,5 +1,6 @@
 import ctypes
 import itertools
+import optparse
 import os
 import readline
 import sys
@@ -130,6 +131,33 @@ class ShellReadJob(ShellJob):
         self.results = []
         self.datastore.read_bytes(ds_basic.ALL, progresscb=self.on_progress)
 
+class ShellWriteJob(ShellJob):
+    def __init__(self, shell, dest_path, src_path):
+        self.dest_datastore = shell.session.open(dest_path, '<temporary>')
+        try:
+            self.src_datastore = shell.session.open(src_path, '<temporary>')
+            try:
+                self.dest_path = ds_basic.dsid_to_bytes(self.dest_datastore.dsid)
+                self.src_path = ds_basic.dsid_to_bytes(self.src_datastore.dsid)
+                description = '<write %s to %s>' % (self.src_path, self.dest_path)
+                ShellJob.__init__(self, description, shell)
+                self.src_datastore.addref(self.description)
+            finally:
+                self.src_datastore.release('<temporary>')
+            self.dest_datastore.addref(self.description)
+        finally:
+            self.dest_datastore.release('<temporary>')
+
+    def on_finished(self, job):
+        ShellJob.on_finished(self, job)
+        self.dest_datastore.release(self.description)
+        self.src_datastore.release(self.description)
+        if not self.canceled and self.exception:
+            print 'writing %s to %s failed:\n%s' % (self.src_path, self.dest_path, self.traceback)
+
+    def run(self):
+        self.dest_datastore.write(self.src_datastore, self, {}, self.on_progress)
+
 class Shell(object):
     easteregg_strings = {
         'love': "I have not been taught how to love.",
@@ -215,12 +243,16 @@ To see a list of all commands and help topics, type "help topics\""""
                     if args[0] != 'quit':
                         self.threadpool.refresh()
 
-                    try:
-                        func = getattr(self, 'cmd_' + args[0])
-                    except AttributeError:
-                        self.prnt('I don\'t understand "%s". Type "help" if you need help.' % args[0])
+                    if args[0] == 'pyeval':
+                        # this isn't a "real" command, so I don't have to document or maintain it :p
+                        self.prnt(eval(' '.join(args[1:])))
                     else:
-                        func(args[1:])
+                        try:
+                            func = getattr(self, 'cmd_' + args[0])
+                        except AttributeError:
+                            self.prnt('I don\'t understand "%s". Type "help" if you need help.' % args[0])
+                        else:
+                            func(args[1:])
 
                 self.threadpool.refresh()
             except KeyboardInterrupt:
@@ -398,6 +430,38 @@ from the fourth byte, and 10..12 will read two bytes of data starting from the
 
         self.do_job(job)
 
+    def cmd_write(self, argv):
+        """usage: write [-d dest_path] [-s src_path]
+
+Write to an object.
+
+If the -d switch is specified, write to the given path, otherwise use the
+current object.
+
+If the -s switch is specified, read from the given path."""
+        parser = optparse.OptionParser()
+        parser.add_option('-d', action='store', type='string', dest='dest_path')
+        parser.add_option('-s', action='store', type='string', dest='src_path')
+        options, args = parser.parse_args(argv)
+
+        if args:
+            self.prnt('write: should be called with no arguments, only switches')
+            return
+
+        if options.dest_path:
+            dest_path = self.bytes_to_dsid(options.dest_path)
+        else:
+            dest_path = self.cwd.dsid
+
+        if options.src_path:
+            src_path = self.bytes_to_dsid(options.src_path)
+        else:
+            self.prnt('write: a source path must be specified; use the -s switch')
+            return
+
+        job = ShellWriteJob(self, dest_path, src_path)
+
+        self.do_job(job)
 
 def main(argv):
     s = Shell()

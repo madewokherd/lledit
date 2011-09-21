@@ -5,6 +5,7 @@ import errno
 import os
 import stat
 import string
+import tempfile
 import threading
 
 class Token(object):
@@ -181,10 +182,7 @@ class DataStore(object):
         if isinstance(key, type) and issubclass(key, DataStore):
             return (self.dsid + (key,)), key
         elif isinstance(key, CharacterRange):
-            if key.start == 0 and key.end is END:
-                return self.dsid, type(self)
-            else:
-                return (self.dsid + (key,)), Slice
+            return (self.dsid + (key,)), Slice
         elif key is PARENT:
             dsid = self.get_parent_dsid()
             if dsid == ():
@@ -224,18 +222,30 @@ class DataStore(object):
     def get_size(self):
         raise TypeError
 
-    def on_change(self, datastore, key):
+    def on_change(self, datastore, key, requestor):
         pass
 
-    def notify_changed(self, key):
-        with self._session_lock:
+    def notify_change(self, key, requestor):
+        with self.session.lock:
             for referer in self.referers:
                 try:
                     f = referer.on_change
                 except AttributeError:
                     continue
                 else:
-                    f(self, key)
+                    f(self, key, requestor)
+
+    def copyto(self, dst_datastore, requestor, options, progresscb=do_nothing):
+        raise TypeError
+
+    def write(self, src_datastore, requestor, options, progresscb=do_nothing):
+        return src_datastore.copyto(self, requestor, options, progresscb)
+
+    def write_bytes(self, src_datastore, requestor, r=ALL, progresscb=do_nothing):
+        raise TypeError
+
+    def commit(self, progresscb=do_nothing):
+        raise TypeError
 
 class Root(DataStore):
     def __init__(self, session, referrer, dsid):
@@ -315,11 +325,14 @@ class Slice(DataStore):
         else:
             return self.range.end - self.range.start
 
-    def on_change(self, datastore, key):
+    def on_change(self, datastore, key, requestor):
         if datastore == self.parent and isinstance(key, CharacterRange):
             union = range_union(self.range, key)
             if union is not None:
-                self.notify_change(range_offset(union, -self.range.start))
+                self.notify_change(range_offset(union, -self.range.start), requestor)
+
+    def write(self, src_datastore, requestor, options, progresscb=do_nothing):
+        return self.parent.write_bytes(src_datastore, requestor, self.range, progresscb)
 
 DataFieldInfo = collections.namedtuple('DataFieldInfo', ('name', 'path', 'type', 'start', 'end'))
 
@@ -427,7 +440,7 @@ class Data(DataStore):
     def get_size(self):
         return self.get_rawdata().get_size()
 
-    def on_change(self, datastore, key):
+    def on_change(self, datastore, key, requestor):
         changed_range = None
         with self.session.lock:
             if datastore is self.parent and key == self.dsid[-1]:
@@ -436,7 +449,7 @@ class Data(DataStore):
             elif datastore is self.rawdata and isinstance(key, CharacterRange):
                 changed_range = key
         if changed_range is not None:
-            self.notify_change(changed_range)
+            self.notify_change(changed_range, requestor)
 
 class UIntBE(Data):
     @classmethod
@@ -592,7 +605,7 @@ class HeteroArray(Data):
         else:
             return 0
 
-    def notify_change(self, key):
+    def notify_change(self, key, requestor):
         if isinstance(key, CharacterRange):
             with self.session.lock:
                 any_invalid_data = False
@@ -600,11 +613,11 @@ class HeteroArray(Data):
                 while self.ranges and (self.ranges[-1].start >= key.start):
                     self.ofs = self.ranges[-1].start
                     self.ranges.pop(-1)
-                    self.notify_change(len(ranges))
+                    self.notify_change(len(ranges), requestor)
                     any_invalid_data = True
                 self.times_refreshed += 1
 
-        Data.notify_change(self, key)
+        Data.notify_change(self, key, requestor)
         
 
 class Structure(Data):
@@ -728,14 +741,14 @@ class Structure(Data):
                 fields[name.lower()] = DataFieldInfo(name, None, klass, start, end)
                 field_order.append(name)
 
-    def notify_change(self, key):
-        Data.notify_change(self, key)
+    def notify_change(self, key, requestor):
+        Data.notify_change(self, key, requestor)
         if isinstance(key, CharacterRange):
             with self.session.lock:
                 # FIXME: we could possibly be smarter about this
                 if self.fields is not None:
                     for field in self.__fields__:
-                        self.notify_change(field[0])
+                        self.notify_change(field[0], requestor)
                     self.times_refreshed += 1
                     self.fields = None
 
@@ -758,6 +771,7 @@ class FileSystemObject(DataStore):
         self.path = path
         self.lock = threading.RLock()
         self.fd = None
+        self.changes = StreamChanges()
 
     def get_fd(self, writable=False):
         assert not self.session.lock._is_owned() # No blocking operations allowed while the session is locked
@@ -820,7 +834,7 @@ class FileSystemObject(DataStore):
                     entry = entry.encode('utf8')
                 yield entry
         elif stat.S_ISREG(st.st_mode):
-            yield CharacterRange(0, st.st_size)
+            yield CharacterRange(0, self.changes.get_size(st.st_size))
             # FIXME: Chain to magic number checking code
         else:
             raise NotImplementedError("not implemented for file type %x" % stat.S_IFMT(st.st_mode))
@@ -840,7 +854,7 @@ class FileSystemObject(DataStore):
         else:
             return DataStore.get_child_dsid(self, key)
 
-    def read_bytes(self, r=ALL, progresscb=do_nothing):
+    def read_disk_bytes(self, r=ALL, progresscb=do_nothing):
         if r.end == r.start:
             return ''
         with self.lock:
@@ -874,6 +888,17 @@ class FileSystemObject(DataStore):
 
         return ''.join(result)
 
+    def read_bytes(self, r=ALL, progresscb=do_nothing):
+        with self.lock:
+            return self.changes.read_bytes(self.read_disk_bytes, self.get_size(), r, progresscb)
+
+    def write_bytes(self, src_datastore, requestor, r=ALL, progresscb=do_nothing):
+        with self.lock:
+            return self.changes.write_bytes(src_datastore, requestor, self.notify_change, r)
+
+    def commit(self, progresscb=do_nothing):
+        raise TypeError
+
     def get_parent_dsid(self):
         if self.path is None or self.path == '/':
             return DataStore.get_parent_dsid(self)
@@ -897,7 +922,185 @@ class FileSystemObject(DataStore):
             if fd is None:
                 raise IOError("Not a regular file")
 
-            return st.st_size
+            return self.changes.get_size(st.st_size)
+
+class _StreamChangesTempFile(object):
+    def __init__(self):
+        self.tempfile = tempfile.SpooledTemporaryFile(max_size=20480)
+        self.refs = 0
+        self.size = 0
+
+    def ref(self):
+        self.refs += 1
+
+    def unref(self):
+        self.refs -= 1
+        if self.refs == 0:
+            self.tempfile.close()
+
+    def __enter__(self):
+        self.ref()
+
+    def __exit__(self, type, value, traceback):
+        self.unref()
+
+    def readprogress(self, part, whole, data):
+        self.tempfile.write(data)
+        self.size += len(data)
+        return True
+
+class StreamChange(object):
+    pass
+
+class StreamChanges(object):
+    # not thread-safe!
+    def __init__(self):
+        c = StreamChange()
+        c.data_file = None
+        c.data_offset = 0
+        c.len = None
+        self.changes = [c]
+        self.size_difference = 0
+
+    zero_4096 = '\0' * 4096
+
+    def write_bytes(self, src_datastore, requestor, notify_change_cb, r=ALL):
+        if requestor is None:
+            raise ValueError("a requestor must be specified")
+
+        lower = 0
+        upper = -1
+        ofs = 0
+        new_ranges = []
+
+        for i in range(len(self.changes)):
+            new_range = CharacterRange(ofs, END if self.changes[i].len is None else ofs + self.changes[i].len)
+            new_ranges.append(new_range)
+
+            if new_range.end is not END and new_range.end <= r.start:
+                lower = i + 1
+            if r.end is not END and new_range.start >= r.end:
+                upper = i - 1
+                break
+
+            ofs = new_range.end
+        else:
+            upper = len(self.changes)-1
+
+        new_tempfile = _StreamChangesTempFile()
+
+        with new_tempfile:
+            src_datastore.read_bytes(progresscb=new_tempfile.readprogress)
+
+            new_change = StreamChange()
+            new_change.len = new_tempfile.size
+            new_change.data_file = new_tempfile
+            new_change.data_offset = 0
+
+            if upper >= lower:
+                if r.end is not END and (new_ranges[upper].end is END or new_ranges[upper].end > r.end):
+                    new_upper_change = StreamChange()
+                    if self.changes[upper].len is None:
+                        new_upper_change.len = None
+                    else:
+                        new_upper_change.len = self.changes[upper].len + new_ranges[upper].start - r.end
+                    new_upper_change.data_file = self.changes[upper].data_file
+                    new_upper_change.data_offset = self.changes[upper].data_offset + r.end - new_ranges[upper].start
+                    self.changes.insert(upper+1, new_upper_change)
+                    if new_upper_change.len is not None:
+                        self.size_difference += new_upper_change.len
+                    if new_upper_change.data_file is not None:
+                        new_upper_change.data_file.ref()
+
+                if r.start > new_ranges[lower].start:
+                    new_lower_change = StreamChange()
+                    new_lower_change.len = r.start - new_ranges[lower].start
+                    new_lower_change.data_file = self.changes[lower].data_file
+                    new_lower_change.data_offset = self.changes[lower].data_offset
+                    if self.changes[lower].len is not None:
+                        self.size_difference += new_lower_change.len - self.changes[lower].len
+                    self.changes[lower] = new_lower_change
+                    if new_lower_change.data_file is not None and new_lower_change.data_file.refs == 1:
+                        new_lower_change.data_file.tempfile.truncate(new_lower_change.data_offset + new_lower_change.len)
+                    lower += 1
+
+                if upper >= lower:
+                    deleted_changes = self.changes[lower:upper+1]
+                    self.changes[lower:upper+1] = ()
+                    for change in deleted_changes:
+                        if change.len is not None:
+                            self.size_difference -= change.len
+                        if change.data_file is not None:
+                            change.data_file.unref()
+
+            if new_tempfile.size != 0:
+                self.changes.insert(lower, new_change)
+                new_change.data_file.ref()
+                self.size_difference += new_tempfile.size
+
+            if r.end is END or new_change.len == r.end - r.start:
+                notify_change_cb(r, requestor)
+            else:
+                notify_change_cb(CharacterRange(r.start, END), requestor)
+
+        return [self]
+
+    def get_size(self, orig_size):
+        if self.changes and self.changes[-1].len is None:
+            return self.size_difference + max(0, orig_size - self.changes[-1].data_offset)
+        else:
+            return self.size_difference
+
+    def read_bytes(self, read_orig_bytes_cb, orig_size, r=ALL, progresscb=do_nothing):
+        if r.end == r.start:
+            return ''
+
+        ofs = 0
+        read_index = r.start
+        result = []
+        bytes_read = [0]
+
+        if r.end is END:
+            r = CharacterRange(r.start, self.get_size(orig_size))
+
+        def my_progresscb(part, whole, data):
+            bytes_read[0] += len(data)
+            if not progresscb(bytes_read[0], r.end - r.start, data):
+                result.append(data)
+            return True
+
+        for change in self.changes:
+            if ofs >= r.end:
+                break
+
+            if change.len is None:
+                change_len = orig_size - change.data_offset
+                if change_len <= 0:
+                    break
+            else:
+                change_len = change.len
+
+            if r.start <= ofs + change_len:
+                segment_start = max(0, r.start - ofs)
+                segment_end = min(change_len, r.end - ofs)
+
+                if change.data_file is None:
+                    read_orig_bytes_cb(CharacterRange(segment_start + change.data_offset, segment_end + change.data_offset), my_progresscb)
+                    if bytes_read[0] + r.start < segment_end:
+                        zeros_to_return = segment_end - bytes_read[0] - r.start
+                        zero_blocks, zeros_to_return = divmod(zeros_to_return, 4096)
+                        for i in range(zero_blocks):
+                            my_progresscb(None, None, StreamChanges.zero_4096)
+                        if zeros_to_return:
+                            my_progresscb(None, None, '\0' * zeros_to_return)
+                else:
+                    change.data_file.tempfile.seek(segment_start + change.data_offset)
+                    while bytes_read[0] + r.start - ofs < segment_end:
+                        my_progresscb(None, None, change.data_file.tempfile.read(min(4096, segment_end - bytes_read[0] - r.start)))
+
+            ofs += change_len
+
+        return ''.join(result)
 
 def key_to_unicode(key):
     if isinstance(key, bytes):
