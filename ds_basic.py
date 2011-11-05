@@ -265,6 +265,12 @@ class DataStore(object):
                 self.session.modified_datastores.add(self)
                 self.addref('<modified>')
 
+    def unset_modified(self):
+        with self.session.lock:
+            if self in self.session.modified_datastores:
+                self.session.modified_datastores.remove(self)
+                self.release('<modified>')
+
 class Root(DataStore):
     def __init__(self, session, referrer, dsid):
         if dsid != ():
@@ -913,11 +919,24 @@ class FileSystemObject(DataStore):
     def write_bytes(self, src_datastore, requestor, r=ALL, progresscb=do_nothing):
         with self.lock:
             self.changes.write_bytes(src_datastore, requestor, self.notify_change, r)
-        self.set_modified()
+            self.set_modified()
         return [self]
 
+    def _commit_as_file(self, progresscb=do_nothing):
+        # FIXME: Copy attributes from original?
+        fd, path = tempfile.mkstemp(dir=os.path.dirname(self.path))
+        f = os.fdopen(fd, 'wb')
+        def read_bytes_progress(part, whole, data):
+            f.write(data)
+        self.changes.read_bytes(self.read_disk_bytes, self.get_size(), ALL, read_bytes_progress)
+        f.close()
+        os.rename(path, self.path)
+
     def commit(self, progresscb=do_nothing):
-        raise TypeError
+        with self.lock:
+            self._commit_as_file(progresscb)
+            self.unset_modified()
+        return ()
 
     def get_parent_dsid(self):
         if self.path is None or self.path == '/':

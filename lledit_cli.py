@@ -163,6 +163,31 @@ class ShellWriteJob(ShellJob):
     def run(self):
         self.modified = self.dest_datastore.write(self.src_datastore, self, {}, self.on_progress)
 
+class ShellCommitJob(ShellJob):
+    def __init__(self, shell, path):
+        self.modified = ()
+        self.datastore = shell.session.open(path, '<temporary>')
+        try:
+            self.path = ds_basic.dsid_to_bytes(self.datastore.dsid)
+            description = '<commit %s>' % (self.path)
+            ShellJob.__init__(self, description, shell)
+            self.datastore.addref(self.description)
+        finally:
+            self.datastore.release('<temporary>')
+
+    def on_finished(self, job):
+        ShellJob.on_finished(self, job)
+        self.datastore.release(self.description)
+        if not self.canceled and self.exception:
+            print 'committing %s failed:\n%s' % (self.path, self.traceback)
+        elif not self.canceled:
+            if self.modified:
+                for ds in self.modified:
+                    print 'Unsaved changes to %s' % (ds_basic.dsid_to_bytes(ds.dsid))
+
+    def run(self):
+        self.modified = self.datastore.commit(self.on_progress)
+
 class Shell(object):
     easteregg_strings = {
         'love': "I have not been taught how to love.",
@@ -465,6 +490,24 @@ If the -s switch is specified, read from the given path."""
             return
 
         job = ShellWriteJob(self, dest_path, src_path)
+
+        self.do_job(job)
+
+    def cmd_save(self, argv):
+        """usage: save [path]
+
+Save an object to the underlying storage medium.
+
+If no path is specified, use the current object."""
+        parser = optparse.OptionParser()
+        options, args = parser.parse_args(argv)
+
+        if len(args) == 0:
+            dsid = self.cwd.dsid
+        else:
+            dsid = self.bytes_to_dsid(args[0])
+
+        job = ShellCommitJob(self, dsid)
 
         self.do_job(job)
 
