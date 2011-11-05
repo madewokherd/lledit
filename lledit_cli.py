@@ -158,10 +158,10 @@ class ShellWriteJob(ShellJob):
         elif not self.canceled:
             if self.modified:
                 for ds in self.modified:
-                    print 'Unsaved changes to: %s' % (dsid_to_bytes(ds.path))
+                    print 'Unsaved changes to %s' % (ds_basic.dsid_to_bytes(ds.dsid))
 
     def run(self):
-        self.dest_datastore.write(self.src_datastore, self, {}, self.on_progress)
+        self.modified = self.dest_datastore.write(self.src_datastore, self, {}, self.on_progress)
 
 class Shell(object):
     easteregg_strings = {
