@@ -468,6 +468,32 @@ If the -s switch is specified, read from the given path."""
 
         self.do_job(job)
 
+    def cmd_lsof(self, argv):
+        """usage: lsof
+
+Get a list of paths that are opened and why."""
+        parser = optparse.OptionParser()
+        options, args = parser.parse_args(argv)
+
+        if args:
+            self.prnt('lsof: should be called with no arguments')
+            return
+
+        items = self.session.get_open_datastores()
+        longest_path = 0
+        for path, reasons in items:
+            longest_path = max(len(ds_basic.dsid_to_bytes(path)), longest_path)
+        longest_path += 3
+        for path, reasons in items:
+            byte_path = ds_basic.dsid_to_bytes(path)
+            byte_reasons = []
+            for reason in reasons:
+                if isinstance(reason, basestring):
+                    byte_reasons.append(reason)
+                else:
+                    byte_reasons.append(ds_basic.dsid_to_bytes(reason))
+            print '%s%s%s' % (byte_path, ' ' * (longest_path - len(byte_path)), ' '.join(byte_reasons))
+
 def main(argv):
     s = Shell()
     return s.run()

@@ -112,6 +112,15 @@ class Session(object):
 
         return result
 
+    def get_open_datastores(self):
+        result = []
+        with self.lock:
+            for key, value in self.open_datastores.iteritems():
+                if key == ():
+                    continue
+                result.append((key, value.referers[:]))
+        return result
+
 def sample_string(string, length):
     bytes = string.encode('string_escape')
     if len(bytes) > length:
