@@ -164,6 +164,8 @@ class DataStore(object):
                 raise ValueError("This object has been freed")
             self.referers.remove(referer)
             if not self.referers:
+                for reference in self.references[:]:
+                    self.release_datastore(reference)
                 del self.session.open_datastores[self.dsid]
                 self.referers = None # just in case
         if not self.session:
@@ -178,8 +180,8 @@ class DataStore(object):
         return result
 
     def release_datastore(self, datastore):
-        datastore.release(self)
         self.references.remove(datastore)
+        datastore.release(self.dsid)
 
     def enum_keys(self, progresscb=do_nothing):
         return iter(())
