@@ -331,8 +331,8 @@ class Slice(DataStore):
     def translate_range(self, range):
         return translate_range(self.range, range)
 
-    def enum_keys(self):
-        return CharacterRange(0, END if self.range.end is END else self.range.end - self.range.start)
+    def enum_keys(self, progresscb=do_nothing):
+        return [CharacterRange(0, END if self.range.end is END else self.range.end - self.range.start)]
 
     def read_bytes(self, r=ALL, progresscb=do_nothing):
         return self.parent.read_bytes(self.translate_range(r), progresscb)
