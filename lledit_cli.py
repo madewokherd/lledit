@@ -133,6 +133,7 @@ class ShellReadJob(ShellJob):
 
 class ShellWriteJob(ShellJob):
     def __init__(self, shell, dest_path, src_path):
+        self.modified = ()
         self.dest_datastore = shell.session.open(dest_path, '<temporary>')
         try:
             self.src_datastore = shell.session.open(src_path, '<temporary>')
@@ -154,6 +155,10 @@ class ShellWriteJob(ShellJob):
         self.src_datastore.release(self.description)
         if not self.canceled and self.exception:
             print 'writing %s to %s failed:\n%s' % (self.src_path, self.dest_path, self.traceback)
+        elif not self.canceled:
+            if self.modified:
+                for ds in self.modified:
+                    print 'Unsaved changes to: %s' % (dsid_to_bytes(ds.path))
 
     def run(self):
         self.dest_datastore.write(self.src_datastore, self, {}, self.on_progress)

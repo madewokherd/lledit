@@ -48,6 +48,7 @@ class Session(object):
         self.modules = [__import__('ds_basic'), __import__('ds_png')]
         self.refresh_modules()
         self.aliases = {}
+        self.modified_datastores = set()
 
     def refresh_modules(self):
         datastore_types = {}
@@ -246,6 +247,12 @@ class DataStore(object):
 
     def commit(self, progresscb=do_nothing):
         raise TypeError
+
+    def set_modified(self):
+        with self.session.lock:
+            if self not in self.session.modified_datastores:
+                self.session.modified_datastores.add(self)
+                self.addref('<modified>')
 
 class Root(DataStore):
     def __init__(self, session, referrer, dsid):
@@ -894,7 +901,9 @@ class FileSystemObject(DataStore):
 
     def write_bytes(self, src_datastore, requestor, r=ALL, progresscb=do_nothing):
         with self.lock:
-            return self.changes.write_bytes(src_datastore, requestor, self.notify_change, r)
+            self.changes.write_bytes(src_datastore, requestor, self.notify_change, r)
+        self.set_modified()
+        return [self]
 
     def commit(self, progresscb=do_nothing):
         raise TypeError
@@ -1042,8 +1051,6 @@ class StreamChanges(object):
                 notify_change_cb(r, requestor)
             else:
                 notify_change_cb(CharacterRange(r.start, END), requestor)
-
-        return [self]
 
     def get_size(self, orig_size):
         if self.changes and self.changes[-1].len is None:
