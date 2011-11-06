@@ -296,6 +296,27 @@ To see a list of all commands and help topics, type "help topics\""""
         """usage: quit [-f]
 
 Quit the lledit shell. If -f is included, don't ask about unsaved files."""
+        parser = optparse.OptionParser()
+        parser.add_option('-f', action='store_true', dest='force')
+        options, args = parser.parse_args(argv)
+
+        if args:
+            self.prnt('quit: should be called with no arguments')
+            return
+
+        if not options.force:
+            items = self.session.get_open_datastores()
+            unsaved = []
+            for key, value in items:
+                if '<modified>' in value:
+                    unsaved.append(key)
+            if unsaved:
+                self.prnt('The following objects have unsaved changes:')
+                for dsid in unsaved:
+                    self.prnt(' %s' % ds_basic.dsid_to_bytes(dsid))
+                self.prnt('Use "save <object>" to save them, or "quit -f" to quit without saving.')
+                return
+
         self.quits += 1
 
     def cmd_help(self, argv):

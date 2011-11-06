@@ -918,8 +918,8 @@ class FileSystemObject(DataStore):
 
     def write_bytes(self, src_datastore, requestor, r=ALL, progresscb=do_nothing):
         with self.lock:
-            self.changes.write_bytes(src_datastore, requestor, self.notify_change, r)
             self.set_modified()
+            self.changes.write_bytes(src_datastore, requestor, self.notify_change, r)
         return [self]
 
     def _commit_as_file(self, progresscb=do_nothing):
