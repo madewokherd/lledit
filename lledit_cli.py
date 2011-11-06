@@ -4,6 +4,7 @@ import optparse
 import os
 import readline
 import sys
+import termios
 import traceback
 
 import ds_basic
@@ -240,8 +241,8 @@ To see a list of all commands and help topics, type "help topics\""""
         try:
             return raw_input(prompt)
         except EOFError:
-            self.prnt('')
-            return 'quit -f'
+            self.prnt('quit')
+            return 'quit -x'
 
     def split(self, string):
         args = string.split(' ')
@@ -298,6 +299,7 @@ To see a list of all commands and help topics, type "help topics\""""
 Quit the lledit shell. If -f is included, don't ask about unsaved files."""
         parser = optparse.OptionParser()
         parser.add_option('-f', action='store_true', dest='force')
+        parser.add_option('-x', action='store_true', dest='eof')
         options, args = parser.parse_args(argv)
 
         if args:
@@ -314,7 +316,14 @@ Quit the lledit shell. If -f is included, don't ask about unsaved files."""
                 self.prnt('The following objects have unsaved changes:')
                 for dsid in unsaved:
                     self.prnt(' %s' % ds_basic.dsid_to_bytes(dsid))
-                self.prnt('Use "save <object>" to save them, or "quit -f" to quit without saving.')
+                if options.eof:
+                    try:
+                        termios.tcflow(sys.stdin.fileno(), termios.TCION)
+                    except:
+                        self.prnt('Unable to keep input stream open (not a terminal?). Your changes have been lost.')
+                        self.quits += 1
+                        return
+                self.prnt('\rUse "save <object>" to save them, or "quit -f" to quit without saving.')
                 return
 
         self.quits += 1
